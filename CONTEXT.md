@@ -38,11 +38,16 @@ any machine.
 The Colab secret `RIOT_API_KEY` must be set (see below). Dev keys expire every 24h —
 renew at [developer.riotgames.com](https://developer.riotgames.com) and update the secret.
 
+**If the report looks stale after a code update:** re-run Cell 1 — it now always
+`git pull`s the latest `_analysis.py`. Cell 1 prints the current commit hash so you
+can confirm which version is loaded. If the notebook structure itself changed, close
+the tab, do **Runtime → Disconnect and delete runtime**, and reopen the link fresh.
+
 ---
 
 ## Colab secrets (one-time setup per Google account)
 
-In Colab: click the 🔑 key icon (left sidebar) → Add new secret:
+In Colab: click the key icon (left sidebar) → Add new secret:
 
 | Name | Value |
 |------|-------|
@@ -67,7 +72,7 @@ Requires `.env` in the project root with `RIOT_API_KEY` set.
 
 | Cell | Purpose |
 |------|---------|
-| Cell 1 | Colab setup — clones repo, installs deps (skipped when running locally) |
+| Cell 1 | Colab setup — clones repo (or pulls latest), installs deps, prints commit hash |
 | Cell 2 | Setup — loads API key, looks up live PUUID, initialises client |
 | Cell 3 | Recent games — fetches last 10, prints table |
 | Cell 4 | Select match — edit `MATCH_INDEX` (0 = most recent) or paste a `MATCH_ID` |
@@ -96,20 +101,43 @@ Only relevant when running locally. Fetched matches are saved as JSON files
 In Colab the cache is per-session (ephemeral) — matches re-fetch from the API each
 time, which takes ~1 second per match.
 
-Currently 20 matches pre-cached locally (Chumpanda's history as of 2026-05-21).
-
 ---
 
 ## What the coaching report contains
 
-1. **Match header** — champion, result, KDA, CS/min, gold, damage, vision
+1. **Match header** — champion, result, KDA, CS/min, gold, damage, vision, team comps
 2. **Key decision windows** — the main coaching layer:
-   - 1st and 2nd dragon: player zone at time, involvement, what happened in 90s after
-   - First outer tower: player path after it fell, objectives in 90s window
-   - High unspent gold: any minute holding >1200g before spending — flagged if a dragon was contested at the same time
+   - 1st and 2nd dragon: labelled assessment, recommendation, and confidence
+   - TOP LANE outer turret: ally-taken and enemy-taken tracked separately, each with recommendation
+   - High unspent gold: flagged at 1500g+ with 30s objective exception
 3. **Lane phase snapshot** — CS / gold / level at 5, 10, 14 min vs enemy laner
-4. **Deaths & aftermath** — each death with zone, killer, gold lead, unspent gold flag, objectives/towers lost in 90s
-5. **Full timeline** — every kill, objective, tower, and turret plate chronologically
+4. **Deaths & aftermath** — zone, killer, gold tier flags (800/1500/2500g), shutdown risk,
+   pre-death kill classification, ally kills at 15/30/60s after death, objectives/towers within 90s
+5. **Teemo shroom usage** — total placed, early/mid/late buckets, correlation with dragon windows
+   (Teemo only; Riot API does not include placement coordinates)
+6. **Full timeline** — every kill, objective, tower, and turret plate chronologically
+
+---
+
+## Dragon assessment labels
+
+| Label | Meaning |
+|-------|---------|
+| `good_objective_contribution` | Player secured, assisted, or was in the pit |
+| `correct_trade` | Player absent top-side with a kill or tower found in 90s prior |
+| `too_late_to_rotate` | Player was moving toward dragon but arrived after it was taken |
+| `missed_rotation` | Player in a rotatable zone (mid/bot/river) but did not rotate |
+| `low_impact_absence` | Player was top-side but no kill or tower pressure found |
+| `unclear_low_confidence` | Player in base or zone could not be determined |
+
+---
+
+## Known Riot API limitations
+
+- `WARD_PLACED` (Teemo shrooms) events contain no position coordinates — zone inference is impossible
+- `DRAGON_SOUL_GIVEN` fires in Swiftplay after every dragon (game-mode quirk), not just the 4th —
+  treat these events as unreliable metadata
+- Participant PUUID in historical match JSON differs from the Account API PUUID (handled via name fallback)
 
 ---
 
@@ -138,7 +166,17 @@ deployed. No active Cloud Run jobs, no BigQuery tables, no scheduled tasks.
 
 ---
 
-## Possible next improvements
+## Pending refinements (next session)
+
+1. Tower transition: classify as `correct_trade` when ally secured dragon AND player converted top outer → inner in the same window — don't recommend rotating to dragon in that case
+2. High unspent gold near an ally-secured objective: use softer wording (no penalty framing)
+3. Guaranteed-gain exception: if high gold and a tower/objective is taken within 30s after, classify as `acceptable_greed` instead of a reset mistake
+4. `DRAGON_SOUL_GIVEN` in full timeline: suppress entirely or gate behind a reliable team mapping (Swiftplay fires this after every dragon, making it misleading)
+5. Death context: surface player's own post-death kills explicitly (e.g. "Player post-death kill: Shyvana at 12:55") — current output only shows ally kills
+
+---
+
+## Possible future improvements
 
 - Multi-match selection in Cell 4 (loop over several games, one file each)
 - Fetch opponent champion mastery from Riot API for richer opponent context
