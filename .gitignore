@@ -1,0 +1,12 @@
+.env
+.venv/
+.uv-cache/
+__pycache__/
+*.py[cod]
+*.egg-info/
+data/
+exports/
+match_cache/
+*_coaching.txt
+uv.lock
+.streamlit/
