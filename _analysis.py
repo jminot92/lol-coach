@@ -8,6 +8,10 @@ from datetime import datetime, timezone
 # Zone inference
 # ---------------------------------------------------------------------------
 
+_TOP_ZONES = {"top_lane", "blue_top_jungle", "red_top_jungle", "top_river"}
+_ROTATABLE_ZONES = {"mid_lane", "bot_lane", "dragon_pit", "bot_river", "blue_bot_jungle", "red_bot_jungle"}
+
+
 def _zone(x: int | None, y: int | None) -> str:
     if x is None or y is None:
         return "unknown"
@@ -129,6 +133,177 @@ def _side(participants: list[dict], pid: int | None, player_team: int) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Dragon assessment
+# ---------------------------------------------------------------------------
+
+def _top_side_activity(
+    events: list[dict],
+    participants: list[dict],
+    player_id: int,
+    ts: int,
+    window_ms: int = 90_000,
+) -> bool:
+    """True if the player got a kill or destroyed a top-zone building within window_ms before ts."""
+    start = ts - window_ms
+    for e in events:
+        if not (start <= e["timestamp"] <= ts):
+            continue
+        if e["type"] == "CHAMPION_KILL" and e.get("killerId") == player_id:
+            return True
+        if e["type"] == "BUILDING_KILL" and e.get("killerId") == player_id:
+            pos = e.get("position", {})
+            if _zone(pos.get("x"), pos.get("y")) in _TOP_ZONES:
+                return True
+    return False
+
+
+def _dragon_label(
+    involvement: str,
+    secured_by: str,
+    zone: str,
+    events: list[dict],
+    participants: list[dict],
+    player_id: int,
+    player_team: int,
+    ts: int,
+    pf_list: list[dict],
+) -> tuple[str, str, str]:
+    """Returns (label, recommendation, confidence)."""
+
+    if involvement in ("secured", "assisted"):
+        return (
+            "good_objective_contribution",
+            "Good presence at dragon. Look to extend this into a post-dragon push.",
+            "high",
+        )
+
+    if involvement == "nearby":
+        if secured_by == "ally":
+            return (
+                "good_objective_contribution",
+                "You were close — ensure you were inside the pit contributing, not just adjacent.",
+                "medium",
+            )
+        return (
+            "missed_rotation",
+            "You were at dragon but the enemy secured it. Check whether your team had priority to contest.",
+            "medium",
+        )
+
+    # Player was absent — check if they were rotating toward dragon
+    frames_before = [f for f in pf_list if ts - 60_000 <= f["ts"] < ts]
+    if frames_before:
+        approaching = any(
+            _zone(f.get("x"), f.get("y")) in {"top_river", "bot_river", "dragon_pit"}
+            for f in frames_before
+        )
+        if approaching:
+            return (
+                "too_late_to_rotate",
+                "You were rotating toward dragon but arrived after it spawned or was taken. "
+                "Track the spawn timer and start rotating ~45s earlier.",
+                "medium",
+            )
+
+    if zone in _TOP_ZONES:
+        had_activity = _top_side_activity(events, participants, player_id, ts)
+        if had_activity:
+            return (
+                "correct_trade",
+                "Top-side kill or tower pressure found — this trade may be valid. Verify the lead was meaningful "
+                "and that the top-side advantage outweighed dragon value.",
+                "medium",
+            )
+        return (
+            "low_impact_absence",
+            "You were top-side with no kill or tower found. This absence was likely unnecessary — "
+            "rotate earlier when dragon is spawning.",
+            "medium",
+        )
+
+    if zone in _ROTATABLE_ZONES:
+        return (
+            "missed_rotation",
+            "You were in a position to rotate to dragon but did not. Prioritise dragon timer awareness "
+            "and push your wave before the spawn window.",
+            "high",
+        )
+
+    if zone in ("blue_base", "red_base"):
+        return (
+            "unclear_low_confidence",
+            "You were recalling or in base — check if the back timing was forced or avoidable next replay.",
+            "low",
+        )
+
+    return (
+        "unclear_low_confidence",
+        "Unable to determine reason for absence — review the replay for this dragon.",
+        "low",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Teemo shroom analysis (Teemo-only)
+# ---------------------------------------------------------------------------
+
+_SHROOM_HIGH_CONF = {"dragon_pit", "baron_pit"}
+_SHROOM_MED_CONF = {
+    "top_river", "bot_river",
+    "blue_top_jungle", "blue_bot_jungle",
+    "red_top_jungle", "red_bot_jungle",
+}
+
+
+def _teemo_shrooms(
+    events: list[dict],
+    participants: list[dict],
+    player: dict,
+    dragon_events: list[dict],
+) -> str | None:
+    if player.get("championName", "").lower() != "teemo":
+        return None
+
+    ppid = player["participantId"]
+    shroom_events = [
+        e for e in events
+        if e["type"] == "WARD_PLACED"
+        and e.get("wardType") == "TEEMO_MUSHROOM"
+        and e.get("creatorId") == ppid
+    ]
+    if not shroom_events:
+        return "No Teemo shrooms recorded in timeline data."
+
+    lines: list[str] = [f"Total shrooms placed: {len(shroom_events)}"]
+
+    zone_counts: dict[str, int] = {}
+    for e in shroom_events:
+        pos = e.get("position", {})
+        z = _zone(pos.get("x"), pos.get("y"))
+        zone_counts[z] = zone_counts.get(z, 0) + 1
+
+    for z, count in sorted(zone_counts.items(), key=lambda kv: -kv[1]):
+        conf = "high" if z in _SHROOM_HIGH_CONF else ("medium" if z in _SHROOM_MED_CONF else "low")
+        lines.append(f"  {z.replace('_', ' ')}: {count}  [zone confidence: {conf}]")
+
+    for evt in dragon_events[:2]:
+        ts = evt["timestamp"]
+        sub = (evt.get("monsterSubType") or "Dragon").replace("_", " ").title()
+        near = [
+            e for e in shroom_events
+            if abs(e["timestamp"] - ts) <= 120_000
+            and _zone(e.get("position", {}).get("x"), e.get("position", {}).get("y"))
+            in {"dragon_pit", "bot_river"}
+        ]
+        if near:
+            lines.append(f"  {sub}: {len(near)} shroom(s) placed in/near dragon pit within 2 min")
+        else:
+            lines.append(f"  {sub}: no shrooms detected near dragon pit")
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Formatting helpers
 # ---------------------------------------------------------------------------
 
@@ -138,7 +313,7 @@ _QUEUE_NAMES: dict[int, str] = {
     700: "Clash", 900: "URF", 1700: "Arena", 1900: "URF",
 }
 
-_OBJECTIVE_TYPES = {"ELITE_MONSTER_KILL", "DRAGON_SOUL_GIVEN"}
+_OBJECTIVE_TYPES = {"ELITE_MONSTER_KILL"}
 _MONSTER_TYPES = {"DRAGON", "BARON_NASHOR", "RIFTHERALD", "HORDE"}
 
 
@@ -155,6 +330,16 @@ def _dur(seconds: int) -> str:
 def _sep(title: str = "") -> str:
     line = "=" * 60
     return f"\n{line}\n{title}\n{line}" if title else f"\n{'=' * 60}"
+
+
+def _gold_flag(unspent: int) -> str:
+    if unspent >= 2500:
+        return f"  !! {unspent}g unspent — severe recall delay, high shutdown risk if caught"
+    if unspent >= 1500:
+        return f"  !  {unspent}g unspent — should have recalled before this engagement"
+    if unspent >= 800:
+        return f"  ~  {unspent}g unspent — slightly over-delayed recall"
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +401,13 @@ def _lane_phase(player: dict, opponent: dict | None, frames: dict[int, list[dict
     return "\n".join(lines)
 
 
-def _deaths(events: list[dict], participants: list[dict], player: dict, opponent: dict | None, frames: dict[int, list[dict]]) -> str:
+def _deaths(
+    events: list[dict],
+    participants: list[dict],
+    player: dict,
+    opponent: dict | None,
+    frames: dict[int, list[dict]],
+) -> str:
     ppid = player["participantId"]
     pt = player["teamId"]
     pf_list = frames.get(ppid, [])
@@ -240,44 +431,88 @@ def _deaths(events: list[dict], participants: list[dict], player: dict, opponent
 
         unspent = pf["current_gold"] if pf else 0
         level = pf["level"] if pf else "?"
+        total_gold = pf["total_gold"] if pf else 0
         gold_lead = (pf["total_gold"] - of["total_gold"]) if (pf and of) else None
-
         lead_str = f"  gold lead vs laner: {gold_lead:+,}" if gold_lead is not None else ""
+
+        # Classification: kill within 30s before death = risky overstay but traded
+        pre_kills = [
+            e for e in events
+            if e["type"] == "CHAMPION_KILL"
+            and e.get("killerId") == ppid
+            and ts - 30_000 <= e["timestamp"] < ts
+        ]
+
+        # Shutdown risk
+        shutdown_note = ""
+        if total_gold >= 6000:
+            shutdown_note = f"  !! Shutdown risk — {total_gold:,}g total (high-value target)"
 
         lines.append(f"Death #{i} @ {_ts(ts)}  zone: {zone}")
         lines.append(f"  {threat}  |  level {level}{lead_str}")
-        if unspent > 800:
-            lines.append(f"  ! {unspent}g unspent at death — sub-optimal recall timing")
+        if pre_kills:
+            lines.append(
+                f"  Classification: risky_overstay_but_traded "
+                f"(secured {len(pre_kills)} kill(s) in the 30s before dying)"
+            )
+        if shutdown_note:
+            lines.append(shutdown_note)
+        gold_flag = _gold_flag(unspent)
+        if gold_flag:
+            lines.append(gold_flag)
 
+        # Ally activity after death (15 / 30 / 60s buckets)
+        for window_end, label in [(15_000, "15s"), (30_000, "30s"), (60_000, "60s")]:
+            window_start = ts + (0 if label == "15s" else (15_000 if label == "30s" else 30_000))
+            ally_kills = [
+                e for e in events
+                if e["type"] == "CHAMPION_KILL"
+                and window_start < e["timestamp"] <= ts + window_end
+                and _side(participants, e.get("killerId"), pt) == "ally"
+            ]
+            if ally_kills:
+                lines.append(f"  Allies: {len(ally_kills)} kill(s) within {label} of your death")
+
+        # Objectives and towers in the 90s after
         after = _window(events, ts, ts + 90_000)
-        objs = [e for e in after if e["type"] in _OBJECTIVE_TYPES or e.get("monsterType") in _MONSTER_TYPES]
+        objs = [e for e in after if e["type"] in _OBJECTIVE_TYPES and e.get("monsterType") in _MONSTER_TYPES]
         towers = [e for e in after if e["type"] == "BUILDING_KILL"]
 
         for o in objs[:2]:
-            sub = o.get("monsterSubType") or o.get("monsterType") or "objective"
+            sub = (o.get("monsterSubType") or o.get("monsterType") or "objective").replace("_", " ").title()
             team = _side(participants, o.get("killerId"), pt)
-            lines.append(f"  -> {_ts(o['timestamp'])}  {team} took {sub.replace('_', ' ').title()} (+{(o['timestamp']-ts)//1000}s)")
+            elapsed = (o["timestamp"] - ts) // 1000
+            lines.append(f"  -> {_ts(o['timestamp'])}  {team} took {sub} (occurred within {elapsed}s of death)")
         for t in towers[:2]:
             team = _side(participants, t.get("killerId"), pt)
             lane = t.get("laneType", "?").replace("_", " ")
-            lines.append(f"  -> {_ts(t['timestamp'])}  {team} tower fell {lane} (+{(t['timestamp']-ts)//1000}s)")
+            elapsed = (t["timestamp"] - ts) // 1000
+            lines.append(f"  -> {_ts(t['timestamp'])}  {team} tower fell {lane} (occurred within {elapsed}s of death)")
         if not objs and not towers:
-            lines.append("  -> No objectives/towers lost in 90s")
+            lines.append("  -> No objectives or towers within 90s of death")
         lines.append("")
 
     return "\n".join(lines)
 
 
-def _decision_windows(events: list[dict], participants: list[dict], player: dict, frames: dict[int, list[dict]]) -> str:
+def _decision_windows(
+    events: list[dict],
+    participants: list[dict],
+    player: dict,
+    frames: dict[int, list[dict]],
+) -> str:
     ppid = player["participantId"]
     pt = player["teamId"]
     pf_list = frames.get(ppid, [])
     lines: list[str] = []
 
     # Dragons (first two)
-    dragons = [e for e in events if e["type"] == "ELITE_MONSTER_KILL" and e.get("monsterType") == "DRAGON"]
+    dragons = [
+        e for e in events
+        if e["type"] == "ELITE_MONSTER_KILL" and e.get("monsterType") == "DRAGON"
+    ]
     for i, evt in enumerate(dragons[:2]):
-        label = "1st" if i == 0 else "2nd"
+        label_num = "1st" if i == 0 else "2nd"
         ts = evt["timestamp"]
         sub = (evt.get("monsterSubType") or "Dragon").replace("_", " ").title()
         secured_by = _side(participants, evt.get("killerId"), pt)
@@ -295,71 +530,122 @@ def _decision_windows(events: list[dict], participants: list[dict], player: dict
         else:
             involvement = "absent"
 
+        assessment, recommendation, confidence = _dragon_label(
+            involvement, secured_by, zone,
+            events, participants, ppid, pt, ts, pf_list,
+        )
+
         after = _window(events, ts, ts + 90_000)
         kills_n = len([e for e in after if e["type"] == "CHAMPION_KILL"])
         towers_n = len([e for e in after if e["type"] == "BUILDING_KILL"])
 
-        lines.append(f"[{_ts(ts)}] {label} Dragon — {sub}")
-        lines.append(f"  Secured by {secured_by}  |  player was in {zone} ({involvement})" +
-                     (f"  |  {gold:,}g" if gold else ""))
-
-        if secured_by == "enemy" and involvement == "absent":
-            lines.append(f"  ! Enemy took {sub} uncontested — was rotating possible?")
-        elif secured_by == "ally" and involvement == "absent":
-            lines.append(f"  ? Team took {sub} without you — was split-push worth it?")
-        elif involvement in ("secured", "assisted", "nearby"):
-            lines.append(f"  + Player contributed to {sub}")
-
-        if kills_n:
+        lines.append(f"[{_ts(ts)}] {label_num} Dragon — {sub}")
+        lines.append(
+            f"  Secured by {secured_by}  |  player zone: {zone}  |  involvement: {involvement}"
+            + (f"  |  {gold:,}g" if gold else "")
+        )
+        lines.append(f"  Assessment    : {assessment}")
+        lines.append(f"  Recommendation: {recommendation}")
+        lines.append(f"  Confidence    : {confidence}")
+        if kills_n or towers_n:
             lines.append(f"  Next 90s: {kills_n} kill(s), {towers_n} tower(s)")
         lines.append("")
 
-    # First outer tower
-    outer_towers = [e for e in events if e["type"] == "BUILDING_KILL" and e.get("towerType") == "OUTER_TURRET"]
-    if outer_towers:
-        evt = outer_towers[0]
+    # Top outer tower — track ally and enemy separately
+    top_outer = [
+        e for e in events
+        if e["type"] == "BUILDING_KILL"
+        and e.get("towerType") == "OUTER_TURRET"
+        and e.get("laneType") == "TOP_LANE"
+    ]
+    ally_top = next((e for e in top_outer if _side(participants, e.get("killerId"), pt) == "ally"), None)
+    enemy_top = next((e for e in top_outer if _side(participants, e.get("killerId"), pt) == "enemy"), None)
+
+    for tag, evt, rec in [
+        (
+            "Ally took TOP LANE outer turret",
+            ally_top,
+            "Rotate to contest dragon or secure Rift Herald vision. "
+            "Don't stay split-pushing with no priority objective available.",
+        ),
+        (
+            "Enemy took TOP LANE outer turret",
+            enemy_top,
+            "You will face dive pressure top. Play closer to your tower or look "
+            "for a counter-play trade on another objective before they push further.",
+        ),
+    ]:
+        if evt is None:
+            continue
         ts = evt["timestamp"]
-        taken_by = _side(participants, evt.get("killerId"), pt)
-        lane = evt.get("laneType", "?").replace("_", " ")
         pf_after = [f for f in pf_list if ts < f["ts"] <= ts + 90_000]
         path = " -> ".join(_zone(f["x"], f["y"]) for f in pf_after[:3]) or "unknown"
 
         after = _window(events, ts, ts + 90_000)
-        objs_after = [e for e in after if e["type"] in _OBJECTIVE_TYPES or e.get("monsterType") in _MONSTER_TYPES]
+        objs_after = [
+            e for e in after
+            if e["type"] in _OBJECTIVE_TYPES and e.get("monsterType") in _MONSTER_TYPES
+        ]
 
-        lines.append(f"[{_ts(ts)}] First Outer Tower — {lane}")
-        lines.append(f"  Taken by {taken_by}  |  player path after: {path}")
+        lines.append(f"[{_ts(ts)}] {tag}")
+        lines.append(f"  Player path after: {path}")
         if objs_after:
             for o in objs_after[:2]:
                 sub = (o.get("monsterSubType") or o.get("monsterType") or "obj").replace("_", " ").title()
                 oteam = _side(participants, o.get("killerId"), pt)
-                lines.append(f"  -> {_ts(o['timestamp'])}  {oteam} took {sub}")
+                elapsed = (o["timestamp"] - ts) // 1000
+                lines.append(f"  -> {_ts(o['timestamp'])}  {oteam} took {sub} (occurred within {elapsed}s)")
         else:
-            lines.append("  No objectives in 90s — recall/vision window available")
+            lines.append("  No objectives within 90s — recall or vision window")
+        lines.append(f"  Recommendation: {rec}")
+        lines.append(f"  Confidence    : medium")
         lines.append("")
 
-    # High unspent gold before spend
-    GOLD_THRESH, SPEND_DROP = 1200, 500
+    # High unspent gold spikes (threshold 1500g; 30s objective exception)
+    GOLD_THRESH, SPEND_DROP = 1500, 500
     for j in range(len(pf_list) - 1):
         f_now, f_next = pf_list[j], pf_list[j + 1]
         if f_now["minute"] == 0:
             continue
-        if f_now["current_gold"] >= GOLD_THRESH and f_next["current_gold"] < f_now["current_gold"] - SPEND_DROP:
-            ts_ms = f_now["ts"]
-            nearby = [
-                e for e in events
-                if e["type"] == "ELITE_MONSTER_KILL" and e.get("monsterType") == "DRAGON"
-                and abs(e["timestamp"] - ts_ms) <= 90_000
-            ]
-            lines.append(f"[{f_now['minute']:02d}:00] High unspent gold: {f_now['current_gold']}g")
-            if nearby:
-                for d in nearby:
-                    sub = (d.get("monsterSubType") or "Dragon").replace("_", " ").title()
-                    dteam = _side(participants, d.get("killerId"), pt)
-                    lines.append(f"  ! {sub} occurred nearby ({dteam}) — was recall timing hurting contest?")
-            else:
-                lines.append("  No objective clash — recall appears acceptable")
-            lines.append("")
+        if f_now["current_gold"] < GOLD_THRESH:
+            continue
+        if f_next["current_gold"] >= f_now["current_gold"] - SPEND_DROP:
+            continue
+
+        ts_ms = f_now["ts"]
+
+        # 30s exception: objective taken within 30s of gold spike — player was contesting, not delaying
+        obj_30s = [
+            e for e in events
+            if e["type"] == "ELITE_MONSTER_KILL" and e.get("monsterType") == "DRAGON"
+            and abs(e["timestamp"] - ts_ms) <= 30_000
+        ]
+        if obj_30s:
+            continue
+
+        contested_90s = [
+            e for e in events
+            if e["type"] == "ELITE_MONSTER_KILL" and e.get("monsterType") == "DRAGON"
+            and abs(e["timestamp"] - ts_ms) <= 90_000
+        ]
+
+        lines.append(f"[{f_now['minute']:02d}:00] High unspent gold: {f_now['current_gold']}g")
+        if contested_90s:
+            for d in contested_90s:
+                sub = (d.get("monsterSubType") or "Dragon").replace("_", " ").title()
+                dteam = _side(participants, d.get("killerId"), pt)
+                elapsed = abs(d["timestamp"] - ts_ms) // 1000
+                lines.append(
+                    f"  ! {sub} occurred within {elapsed}s ({dteam}) — "
+                    f"recall timing may have hurt your ability to contest"
+                )
+            lines.append("  Recommendation: Recall between waves well before the dragon spawn window, not during it.")
+            lines.append("  Confidence    : high")
+        else:
+            lines.append("  No objective clash within 90s — recall timing appears acceptable here")
+            lines.append("  Recommendation: Fine to recall, but spending gold sooner accelerates your power spike.")
+            lines.append("  Confidence    : medium")
+        lines.append("")
 
     return "\n".join(lines) if lines else "No key decision windows found.\n"
 
@@ -397,7 +683,13 @@ def _timeline(events: list[dict], participants: list[dict], player: dict) -> str
             lines.append(f"[{t}] OBJECTIVE   {_side(participants, kid, pt).upper()} secured {monster}")
 
         elif etype == "DRAGON_SOUL_GIVEN":
-            lines.append(f"[{t}] DRAGON SOUL {_side(participants, kid, pt).upper()} claimed dragon soul")
+            # Dragon soul is a team milestone, not a kill — teamId field indicates which team
+            team_id = evt.get("teamId")
+            if team_id is not None:
+                team_label = "YOUR TEAM" if team_id == pt else "ENEMY TEAM"
+            else:
+                team_label = _side(participants, kid, pt).upper()
+            lines.append(f"[{t}] DRAGON SOUL {team_label} achieved dragon soul (4th dragon milestone)")
 
         elif etype == "BUILDING_KILL":
             ttype = evt.get("towerType", "").replace("_", " ")
@@ -433,7 +725,7 @@ def build_coaching_report(
     frames = _parse_frames(timeline_data)
     label = f"{game_name}#{tag_line}" if game_name else puuid[:16] + "..."
 
-    return "\n".join([
+    sections = [
         f"COACHING REPORT — {label}",
         "=" * 60,
         _match_header(info, player, participants),
@@ -443,6 +735,19 @@ def build_coaching_report(
         _lane_phase(player, opponent, frames),
         _sep("DEATHS & AFTERMATH"),
         _deaths(events, participants, player, opponent, frames),
-        _sep("FULL TIMELINE"),
-        _timeline(events, participants, player),
-    ])
+    ]
+
+    # Teemo shroom section (Teemo-only)
+    dragon_events = [
+        e for e in events
+        if e["type"] == "ELITE_MONSTER_KILL" and e.get("monsterType") == "DRAGON"
+    ]
+    shroom_section = _teemo_shrooms(events, participants, player, dragon_events)
+    if shroom_section is not None:
+        sections.append(_sep("TEEMO SHROOM USAGE"))
+        sections.append(shroom_section)
+
+    sections.append(_sep("FULL TIMELINE"))
+    sections.append(_timeline(events, participants, player))
+
+    return "\n".join(sections)
