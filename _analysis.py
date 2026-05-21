@@ -247,14 +247,6 @@ def _dragon_label(
 # Teemo shroom analysis (Teemo-only)
 # ---------------------------------------------------------------------------
 
-_SHROOM_HIGH_CONF = {"dragon_pit", "baron_pit"}
-_SHROOM_MED_CONF = {
-    "top_river", "bot_river",
-    "blue_top_jungle", "blue_bot_jungle",
-    "red_top_jungle", "red_bot_jungle",
-}
-
-
 def _teemo_shrooms(
     events: list[dict],
     participants: list[dict],
@@ -274,31 +266,26 @@ def _teemo_shrooms(
     if not shroom_events:
         return "No Teemo shrooms recorded in timeline data."
 
-    lines: list[str] = [f"Total shrooms placed: {len(shroom_events)}"]
+    total = len(shroom_events)
+    # Bucket by game phase (Riot WARD_PLACED events do not include position)
+    early = sum(1 for e in shroom_events if e["timestamp"] < 10 * 60_000)
+    mid   = sum(1 for e in shroom_events if 10 * 60_000 <= e["timestamp"] < 20 * 60_000)
+    late  = sum(1 for e in shroom_events if e["timestamp"] >= 20 * 60_000)
 
-    zone_counts: dict[str, int] = {}
-    for e in shroom_events:
-        pos = e.get("position", {})
-        z = _zone(pos.get("x"), pos.get("y"))
-        zone_counts[z] = zone_counts.get(z, 0) + 1
+    lines: list[str] = [
+        f"Total shrooms placed: {total}  (early <10m: {early}  |  mid 10-20m: {mid}  |  late >20m: {late})",
+        "  Note: Riot timeline data does not include shroom placement coordinates.",
+    ]
 
-    for z, count in sorted(zone_counts.items(), key=lambda kv: -kv[1]):
-        conf = "high" if z in _SHROOM_HIGH_CONF else ("medium" if z in _SHROOM_MED_CONF else "low")
-        lines.append(f"  {z.replace('_', ' ')}: {count}  [zone confidence: {conf}]")
-
+    # Correlation with dragon windows — shrooms placed within 2 min either side of dragon
     for evt in dragon_events[:2]:
         ts = evt["timestamp"]
         sub = (evt.get("monsterSubType") or "Dragon").replace("_", " ").title()
-        near = [
-            e for e in shroom_events
-            if abs(e["timestamp"] - ts) <= 120_000
-            and _zone(e.get("position", {}).get("x"), e.get("position", {}).get("y"))
-            in {"dragon_pit", "bot_river"}
-        ]
-        if near:
-            lines.append(f"  {sub}: {len(near)} shroom(s) placed in/near dragon pit within 2 min")
+        around = [e for e in shroom_events if abs(e["timestamp"] - ts) <= 120_000]
+        if around:
+            lines.append(f"  {sub}: {len(around)} shroom(s) placed within 2 min of dragon spawn")
         else:
-            lines.append(f"  {sub}: no shrooms detected near dragon pit")
+            lines.append(f"  {sub}: no shrooms placed within 2 min of dragon spawn")
 
     return "\n".join(lines)
 
