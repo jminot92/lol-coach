@@ -4,8 +4,17 @@
 
 A post-game League of Legends coaching tool for **Chumpanda#NA1** (NA server).
 
-After a game ends, run the Jupyter notebook to pull the match from the Riot API,
-generate a structured text coaching report, and drop it into Claude or ChatGPT for analysis.
+After a game ends, open the notebook in Google Colab, run the cells, and a coaching
+`.txt` file downloads automatically. Paste it into Claude or ChatGPT for analysis.
+
+---
+
+## GitHub repo
+
+**https://github.com/jminot92/lol-coach** (public)
+
+The notebook is opened directly from GitHub via Colab — no local install needed on
+any machine.
 
 ---
 
@@ -13,61 +22,81 @@ generate a structured text coaching report, and drop it into Claude or ChatGPT f
 
 | File | Purpose |
 |------|---------|
-| `coaching.ipynb` | The workflow — 4 cells, run top to bottom |
+| `coaching.ipynb` | The workflow — 5 cells, run top to bottom |
 | `_api.py` | Riot API wrapper with local JSON file cache |
 | `_analysis.py` | Converts raw Riot JSON → coaching text report |
 
-Everything else in this repo is dead code from earlier iterations (BigQuery, Cloud Run,
-MCP server, FastAPI, Streamlit, SQLite). It has been removed.
+---
+
+## How to run (Colab — works on any machine)
+
+1. Open the bookmark: `colab.research.google.com/github/jminot92/lol-coach/blob/master/coaching.ipynb`
+2. Run all 5 cells in order
+3. Cell 5 auto-downloads `<MATCH_ID>_coaching.txt`
+4. Paste the file into Claude or ChatGPT
+
+The Colab secret `RIOT_API_KEY` must be set (see below). Dev keys expire every 24h —
+renew at [developer.riotgames.com](https://developer.riotgames.com) and update the secret.
 
 ---
 
-## How to run
+## Colab secrets (one-time setup per Google account)
+
+In Colab: click the 🔑 key icon (left sidebar) → Add new secret:
+
+| Name | Value |
+|------|-------|
+| `RIOT_API_KEY` | Your key from developer.riotgames.com |
+
+Toggle **Notebook access** on. No other secrets needed.
+
+---
+
+## How to run locally (VS Code on laptop)
 
 1. Open `coaching.ipynb` in VS Code
-2. Select the `.venv` Python kernel (see setup below if first time)
-3. **Cell 1** — loads `.env`, initialises API client
-4. **Cell 2** — fetches last 10 games, prints a table
-5. **Cell 3** — edit `MATCH_INDEX` (0 = most recent) or paste a `MATCH_ID` directly
-6. **Cell 4** — generates `<MATCH_ID>_coaching.txt`, saves it, prints a preview
+2. Select the `.venv` kernel — if missing, run `uv add ipykernel` first
+3. Cell 1 detects it's not Colab and skips the clone step
+4. Cell 2 loads `.env` instead of Colab secrets
 
-Paste the `.txt` file into Claude or ChatGPT and ask for coaching.
+Requires `.env` in the project root with `RIOT_API_KEY` set.
 
 ---
 
-## First-time VS Code setup (one-off)
+## Notebook cell structure
 
-```
-uv add ipykernel
-```
-
-Then in VS Code: open `coaching.ipynb` → "Select Kernel" (top right) → Python (.venv).
+| Cell | Purpose |
+|------|---------|
+| Cell 1 | Colab setup — clones repo, installs deps (skipped when running locally) |
+| Cell 2 | Setup — loads API key, looks up live PUUID, initialises client |
+| Cell 3 | Recent games — fetches last 10, prints table |
+| Cell 4 | Select match — edit `MATCH_INDEX` (0 = most recent) or paste a `MATCH_ID` |
+| Cell 5 | Generate file — builds report, saves `.txt`, auto-downloads in Colab |
 
 ---
 
-## Configuration (`.env`)
+## PUUID drift (important)
 
-```
-RIOT_API_KEY            # Dev key — expires every 24h, renew at developer.riotgames.com
-RIOT_REGIONAL_ROUTE     # americas (NA/BR/LAN/LAS)
-RIOT_PLATFORM_ROUTE     # na1
-LOL_MATCH_AI_MY_PUUID   # Chumpanda#NA1 PUUID, hardcoded to avoid Riot API drift
-```
+Riot has two different PUUIDs for the same account:
+- **Account PUUID** — returned by the Account API, used for `get_match_list`
+- **Participant PUUID** — stored inside historical match JSON, different value
 
-**Important:** Riot development API keys expire every 24 hours. If you get a 403 error,
-go to [developer.riotgames.com](https://developer.riotgames.com), regenerate the key,
-and paste it into `.env`.
+Cell 2 always calls `lookup_puuid(GAME_NAME, TAG_LINE)` to get the live account PUUID
+for API calls. When searching participant data in old cached matches, `_analysis.py`
+falls back to matching by `riotIdGameName` if the PUUID doesn't match. Both are handled
+automatically — nothing to configure.
 
 ---
 
 ## Match cache (`match_cache/`)
 
-Fetched matches are saved as JSON files (`<MATCH_ID>.json` + `<MATCH_ID>_timeline.json`).
-On repeat runs the notebook loads from cache instantly — no API calls.
+Only relevant when running locally. Fetched matches are saved as JSON files
+(`<MATCH_ID>.json` + `<MATCH_ID>_timeline.json`) so repeat runs are instant.
 
-Currently 20 matches cached (all of Chumpanda's local history as of 2026-05-21).
+In Colab the cache is per-session (ephemeral) — matches re-fetch from the API each
+time, which takes ~1 second per match.
 
-To clear the cache and re-fetch fresh: delete files from `match_cache/`.
+Currently 20 matches pre-cached locally (Chumpanda's history as of 2026-05-21).
 
 ---
 
@@ -75,31 +104,12 @@ To clear the cache and re-fetch fresh: delete files from `match_cache/`.
 
 1. **Match header** — champion, result, KDA, CS/min, gold, damage, vision
 2. **Key decision windows** — the main coaching layer:
-   - 1st and 2nd dragon: was player present, zone at time, what happened in 90s after
-   - First outer tower: player path after it fell, objectives in window
-   - High unspent gold: any minute where player held >1200g before spending (flags if an objective was contested at same time)
+   - 1st and 2nd dragon: player zone at time, involvement, what happened in 90s after
+   - First outer tower: player path after it fell, objectives in 90s window
+   - High unspent gold: any minute holding >1200g before spending — flagged if a dragon was contested at the same time
 3. **Lane phase snapshot** — CS / gold / level at 5, 10, 14 min vs enemy laner
-4. **Deaths & aftermath** — each death: zone, killer, gold lead at time, unspent gold flag, objectives/towers lost in 90s
-5. **Full timeline** — every kill, objective, tower, and turret plate in chronological order
-
----
-
-## What was removed and why
-
-| Removed | Reason |
-|---------|--------|
-| `src/lol_match_ai/` | Full package (CLI, MCP server, store, FastAPI, BigQuery) — replaced by the 2-file helper approach |
-| `data/lol_matches.sqlite3` | SQLite DB — data exported to `match_cache/` JSON files |
-| `exports/` | JSONL exports — data seeded into `match_cache/`, no longer needed |
-| `scripts/` | Cloud Run / BigQuery deployment scripts — never deployed, project abandoned |
-| `cloud_functions/` | GCP budget guard — never deployed |
-| `docs/`, `openapi/`, `sql/` | Cloud architecture docs — obsolete |
-| `streamlit_app.py`, `Dockerfile` | Earlier UI iteration — abandoned |
-| `.claude/settings.json` MCP config | MCP server removed |
-
-**Google Cloud:** The `GOOGLE_CLOUD_PROJECT=lol-ai-analyser` project was created but
-**nothing was ever deployed** (all scripts were `.example.ps1` templates). No active
-Cloud Run jobs, no BigQuery tables, no scheduled tasks. Nothing to pause or shut down.
+4. **Deaths & aftermath** — each death with zone, killer, gold lead, unspent gold flag, objectives/towers lost in 90s
+5. **Full timeline** — every kill, objective, tower, and turret plate chronologically
 
 ---
 
@@ -108,18 +118,29 @@ Cloud Run jobs, no BigQuery tables, no scheduled tasks. Nothing to pause or shut
 - **Riot ID:** Chumpanda#NA1
 - **Region:** NA (platform: na1, regional route: americas)
 - **Main champion:** Teemo (top lane)
-- **PUUID:** `BH62RseTDGAvIlFWtNySS1R6y0rDbW4Fxa54eXKr-8ZSCsV3HI6-rc4-opydNutmRqMr4c2uUwtFxg`
 
-Note: The PUUID is hardcoded in `.env` rather than looked up via API, because Riot's
-account API can return a different PUUID for the same account than what appears in
-historical match participant data ("PUUID drift"). The hardcoded value matches the
-participant records in the cached matches.
+---
+
+## What was removed and why
+
+| Removed | Reason |
+|---------|--------|
+| `src/lol_match_ai/` | Full package (CLI, MCP server, SQLite store, FastAPI, BigQuery) — replaced by 2-file helper approach |
+| `data/lol_matches.sqlite3` | SQLite DB — data migrated to `match_cache/` JSON files |
+| `exports/` | JSONL exports — seeded into `match_cache/`, no longer needed |
+| `scripts/` | Cloud Run / BigQuery deployment scripts — never deployed |
+| `cloud_functions/` | GCP budget guard — never deployed |
+| `docs/`, `openapi/`, `sql/` | Cloud architecture docs — obsolete |
+| `streamlit_app.py`, `Dockerfile` | Earlier UI iteration — abandoned |
+
+**Google Cloud:** The `lol-ai-analyser` GCP project was created but nothing was ever
+deployed. No active Cloud Run jobs, no BigQuery tables, no scheduled tasks.
 
 ---
 
 ## Possible next improvements
 
-- Add multi-match selection in Cell 3 (loop over several games, generate one file each)
-- Add CS differential chart (matplotlib, already available via Streamlit/pandas install)
-- Fetch opponent champion mastery from Riot API during Cell 4 for richer context
-- Automate Cell 1 + Cell 2 on game-end via a Windows scheduled task or file watcher
+- Multi-match selection in Cell 4 (loop over several games, one file each)
+- Fetch opponent champion mastery from Riot API for richer opponent context
+- CS differential chart using matplotlib
+- Windows scheduled task / file watcher to auto-run after a game ends
