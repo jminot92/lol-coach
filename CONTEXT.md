@@ -107,15 +107,17 @@ time, which takes ~1 second per match.
 
 1. **Match header** — champion, result, KDA, CS/min, gold, damage, vision, team comps
 2. **Key decision windows** — the main coaching layer:
+   - Facts, interpretation, recommendation, and confidence are separated
    - 1st and 2nd dragon: labelled assessment, recommendation, and confidence
-   - TOP LANE outer turret: ally-taken and enemy-taken tracked separately, each with recommendation
-   - High unspent gold: flagged at 1500g+ with 30s objective exception
-3. **Lane phase snapshot** — CS / gold / level at 5, 10, 14 min vs enemy laner
-4. **Deaths & aftermath** — zone, killer, gold tier flags (800/1500/2500g), shutdown risk,
+   - TOP LANE outer turret: ally-taken and enemy-taken tracked separately, with live objective context
+   - High unspent gold: flagged at 1500g+ with 30s objective conversion exception
+3. **Lane opponent context** — opponent champion mastery when Riot's Champion Mastery API is available
+4. **Lane phase snapshot** — CS / gold / level at 5, 10, 14 min vs enemy laner
+5. **Deaths & aftermath** — zone, killer, gold tier flags (800/1500/2500g), shutdown risk,
    pre-death kill classification, ally kills at 15/30/60s after death, objectives/towers within 90s
-5. **Teemo shroom usage** — total placed, early/mid/late buckets, correlation with dragon windows
+6. **Teemo shroom usage** — total placed, early/mid/late buckets, correlation with dragon windows
    (Teemo only; Riot API does not include placement coordinates)
-6. **Full timeline** — every kill, objective, tower, and turret plate chronologically
+7. **Full timeline** — every kill, objective, tower, and valid turret plate chronologically
 
 ---
 
@@ -166,19 +168,27 @@ deployed. No active Cloud Run jobs, no BigQuery tables, no scheduled tasks.
 
 ---
 
+## Recently completed refinements
+
+1. Tower transition: classify as `correct_trade` when ally secured dragon and player converted top outer -> inner in the same window.
+2. High unspent gold near an ally-secured objective now uses softer wording.
+3. Guaranteed-gain exception: high gold followed by a tower/objective within 30s is classified as `acceptable_greed`.
+4. `DRAGON_SOUL_GIVEN` is only shown when the team has actually secured 4 dragons.
+5. Death context now surfaces player's own post-death kills explicitly.
+6. Standard Summoner's Rift turret plates after 14:00 are suppressed.
+7. Objective recommendations now consider already-taken Herald and upcoming dragon/baron spawns.
+8. Dragon involvement zones prefer `dragon_pit` / `dragon_area` when the player assisted or secured the objective.
+9. Lane opponent champion mastery is fetched in Cell 5 and included as context.
+
 ## Pending refinements (next session)
 
-1. Tower transition: classify as `correct_trade` when ally secured dragon AND player converted top outer → inner in the same window — don't recommend rotating to dragon in that case
-2. High unspent gold near an ally-secured objective: use softer wording (no penalty framing)
-3. Guaranteed-gain exception: if high gold and a tower/objective is taken within 30s after, classify as `acceptable_greed` instead of a reset mistake
-4. `DRAGON_SOUL_GIVEN` in full timeline: suppress entirely or gate behind a reliable team mapping (Swiftplay fires this after every dragon, making it misleading)
-5. Death context: surface player's own post-death kills explicitly (e.g. "Player post-death kill: Shyvana at 12:55") — current output only shows ally kills
+1. Multi-match selection in Cell 4 (loop over several games, one file each)
+2. CS differential chart using matplotlib
 
 ---
 
 ## Possible future improvements
 
 - Multi-match selection in Cell 4 (loop over several games, one file each)
-- Fetch opponent champion mastery from Riot API for richer opponent context
 - CS differential chart using matplotlib
 - Windows scheduled task / file watcher to auto-run after a game ends
