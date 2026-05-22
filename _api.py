@@ -11,12 +11,14 @@ CACHE.mkdir(exist_ok=True)
 
 _KEY: str = ""
 _REGIONAL: str = "americas"
+_PLATFORM: str = "na1"
 
 
-def init(api_key: str, regional: str = "americas") -> None:
-    global _KEY, _REGIONAL
+def init(api_key: str, regional: str = "americas", platform: str = "na1") -> None:
+    global _KEY, _REGIONAL, _PLATFORM
     _KEY = api_key
     _REGIONAL = regional
+    _PLATFORM = platform
 
 
 def _get(url: str, params: dict | None = None) -> dict | list:
@@ -55,3 +57,16 @@ def lookup_puuid(game_name: str, tag_line: str) -> str:
         f"https://{_REGIONAL}.api.riotgames.com/riot/account/v1/accounts/by-riot-id/{game_name}/{tag_line}"
     )
     return data["puuid"]
+
+
+def get_champion_mastery(puuid: str, champion_id: int) -> dict | None:
+    url = (
+        f"https://{_PLATFORM}.api.riotgames.com/lol/champion-mastery/v4/"
+        f"champion-masteries/by-puuid/{puuid}/by-champion/{champion_id}"
+    )
+    try:
+        return _get(url)
+    except requests.HTTPError as exc:
+        if exc.response is not None and exc.response.status_code == 404:
+            return None
+        raise
