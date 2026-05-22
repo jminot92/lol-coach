@@ -547,9 +547,15 @@ def _timeline(events: list[dict], participants: list[dict], player: dict, info: 
                 lines.append(f"[{t}] KILL        {sk} {k} -> {sv} {v}{a_str}")
         elif etype == "ELITE_MONSTER_KILL":
             monster = (evt.get("monsterSubType") or evt.get("monsterType") or "?").replace("_", " ").title()
-            if evt.get("monsterType") == "DRAGON" and kid_team in dragon_counts:
-                dragon_counts[kid_team] += 1
-            lines.append(f"[{t}] OBJECTIVE   {_side(participants, kid, pt).upper()} secured {monster}")
+            objective_team = evt.get("killerTeamId") or kid_team
+            if evt.get("monsterType") == "DRAGON" and objective_team in dragon_counts:
+                dragon_counts[objective_team] += 1
+            side_label = (
+                "ALLY" if objective_team == pt
+                else "ENEMY" if objective_team in dragon_counts
+                else _side(participants, kid, pt).upper()
+            )
+            lines.append(f"[{t}] OBJECTIVE   {side_label} secured {monster}")
         elif etype == "DRAGON_SOUL_GIVEN":
             team_id = evt.get("teamId")
             if team_id in dragon_counts and dragon_counts[team_id] >= 4:
