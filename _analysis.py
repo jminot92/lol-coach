@@ -155,6 +155,16 @@ def _gold_flag(unspent: int) -> str:
     return ""
 
 
+def _gold_severity(unspent: int) -> str:
+    if unspent >= 2500:
+        return "severe"
+    if unspent >= 1500:
+        return "high"
+    if unspent >= 1000:
+        return "medium"
+    return "low"
+
+
 def _dragon_kills(events: list[dict]) -> list[dict]:
     return [e for e in events if e["type"] == "ELITE_MONSTER_KILL" and e.get("monsterType") == "DRAGON"]
 
@@ -211,6 +221,306 @@ def _top_tower_transition_near_dragon(events: list[dict], participants: list[dic
     has_outer = any(e.get("towerType") == "OUTER_TURRET" for e in top_towers)
     player_inner = any(e.get("towerType") == "INNER_TURRET" and e.get("killerId") == player_id for e in top_towers)
     return has_outer and player_inner
+
+
+def _event_team(evt: dict, participants: list[dict]) -> int | None:
+    if evt.get("type") == "ELITE_MONSTER_KILL":
+        team_id = evt.get("killerTeamId")
+        if team_id in (100, 200):
+            return team_id
+    if evt.get("type") == "BUILDING_KILL":
+        destroyed_team = evt.get("teamId")
+        if destroyed_team == 100:
+            return 200
+        if destroyed_team == 200:
+            return 100
+    return _team_id(participants, evt.get("killerId"))
+
+
+def _event_side(evt: dict, participants: list[dict], player_team: int) -> str:
+    team_id = _event_team(evt, participants)
+    if team_id == player_team:
+        return "ally"
+    if team_id in (100, 200):
+        return "enemy"
+    return "?"
+
+
+def _objective_name(evt: dict) -> str:
+    return (evt.get("monsterSubType") or evt.get("monsterType") or "objective").replace("_", " ").title()
+
+
+def _building_name(evt: dict) -> str:
+    tower = evt.get("towerType") or evt.get("buildingType") or "building"
+    lane = evt.get("laneType") or "?"
+    return f"{tower.replace('_', ' ').title()} ({lane.replace('_', ' ')})"
+
+
+def _meaningful_events(events: list[dict], start: int, end: int) -> list[dict]:
+    return [
+        e for e in events
+        if start <= e["timestamp"] <= end
+        and (
+            (e["type"] in _OBJECTIVE_TYPES and e.get("monsterType") in _MONSTER_TYPES)
+            or e["type"] == "BUILDING_KILL"
+        )
+    ]
+
+
+def _format_meaningful(evt: dict, participants: list[dict], player_team: int, base_ts: int) -> str:
+    elapsed = (evt["timestamp"] - base_ts) // 1000
+    side = _event_side(evt, participants, player_team)
+    direction = f"+{elapsed}s" if elapsed >= 0 else f"{elapsed}s"
+    if evt["type"] == "BUILDING_KILL":
+        return f"{side} destroyed {_building_name(evt)} at {_ts(evt['timestamp'])} ({direction})"
+    return f"{side} secured {_objective_name(evt)} at {_ts(evt['timestamp'])} ({direction})"
+
+
+def _kill_desc(evt: dict, participants: list[dict], player_team: int, player_id: int) -> str:
+    killer_id = evt.get("killerId")
+    victim_id = evt.get("victimId")
+    killer = "YOU" if killer_id == player_id else _pname(participants, killer_id)
+    victim = "YOU" if victim_id == player_id else _pname(participants, victim_id)
+    killer_side = _side(participants, killer_id, player_team)
+    victim_side = _side(participants, victim_id, player_team)
+    assists = [
+        ("YOU" if a == player_id else _pname(participants, a))
+        for a in evt.get("assistingParticipantIds", [])
+    ]
+    assist_text = f" (+{', '.join(assists)})" if assists else ""
+    return f"{_ts(evt['timestamp'])} {killer_side} {killer} killed {victim_side} {victim}{assist_text}"
+
+
+def _kill_counts(kills: list[dict], participants: list[dict], player_team: int) -> tuple[int, int]:
+    allied_deaths = sum(1 for e in kills if _side(participants, e.get("victimId"), player_team) == "ally")
+    enemy_deaths = sum(1 for e in kills if _side(participants, e.get("victimId"), player_team) == "enemy")
+    return allied_deaths, enemy_deaths
+
+
+def _participant_frame(frames: dict[int, list[dict]], participant_id: int, ts: int) -> dict | None:
+    return _nearest(frames.get(participant_id, []), ts)
+
+
+def _dist_sq(a: dict, b: dict) -> int | None:
+    if a.get("x") is None or a.get("y") is None or b.get("x") is None or b.get("y") is None:
+        return None
+    dx = a["x"] - b["x"]
+    dy = a["y"] - b["y"]
+    return dx * dx + dy * dy
+
+
+def _nearby_counts(frames: dict[int, list[dict]], participants: list[dict], player: dict, ts: int, radius: int = 3500) -> tuple[int, int, list[str], list[str]]:
+    pframe = _participant_frame(frames, player["participantId"], ts)
+    if not pframe:
+        return 0, 0, [], []
+    radius_sq = radius * radius
+    allies: list[str] = []
+    enemies: list[str] = []
+    for p in participants:
+        if p["participantId"] == player["participantId"]:
+            continue
+        frame = _participant_frame(frames, p["participantId"], ts)
+        if not frame:
+            continue
+        dist = _dist_sq(pframe, frame)
+        if dist is None or dist > radius_sq:
+            continue
+        label = f"{p['championName']}:{_zone(frame.get('x'), frame.get('y'))}"
+        if p["teamId"] == player["teamId"]:
+            allies.append(label)
+        else:
+            enemies.append(label)
+    return len(allies), len(enemies), allies, enemies
+
+
+def _position_samples(frames: dict[int, list[dict]], participants: list[dict], player: dict, ts: int) -> list[str]:
+    samples: list[str] = []
+    for offset_s in [-30, -15, -5, 0, 5, 15, 30]:
+        sample_ts = ts + offset_s * 1000
+        pframe = _participant_frame(frames, player["participantId"], sample_ts)
+        if not pframe:
+            samples.append(f"{offset_s:+d}s: player unknown")
+            continue
+        ally_n, enemy_n, allies, enemies = _nearby_counts(frames, participants, player, sample_ts)
+        sample_age = abs(pframe["ts"] - sample_ts) // 1000
+        samples.append(
+            f"{offset_s:+d}s: player {_zone(pframe.get('x'), pframe.get('y'))} "
+            f"(frame +/-{sample_age}s), allies nearby {ally_n}, enemies nearby {enemy_n}"
+            + (f" | allies: {', '.join(allies[:3])}" if allies else "")
+            + (f" | enemies: {', '.join(enemies[:3])}" if enemies else "")
+        )
+    return samples
+
+
+def _objective_state(events: list[dict], participants: list[dict], ts: int, monster_type: str, first_spawn: int, respawn: int) -> str:
+    kills = [
+        e for e in events
+        if e["type"] == "ELITE_MONSTER_KILL"
+        and e.get("monsterType") == monster_type
+        and e["timestamp"] <= ts
+    ]
+    next_spawn = first_spawn if not kills else kills[-1]["timestamp"] + respawn
+    if ts >= next_spawn:
+        return "alive/contestable"
+    return f"dead/spawning in {(next_spawn - ts) // 1000}s"
+
+
+def _dragon_soul_times(events: list[dict], participants: list[dict]) -> dict[int, int]:
+    counts = {100: 0, 200: 0}
+    soul_times: dict[int, int] = {}
+    for evt in events:
+        if evt["type"] != "ELITE_MONSTER_KILL" or evt.get("monsterType") != "DRAGON":
+            continue
+        if evt.get("monsterSubType") == "ELDER_DRAGON":
+            continue
+        team_id = _event_team(evt, participants)
+        if team_id not in counts or team_id in soul_times:
+            continue
+        counts[team_id] += 1
+        if counts[team_id] >= 4:
+            soul_times[team_id] = evt["timestamp"]
+    return soul_times
+
+
+def _objective_state_lines(events: list[dict], participants: list[dict], player_team: int, ts: int) -> list[str]:
+    soul_times = _dragon_soul_times(events, participants)
+    soul_before = [t for t in soul_times.values() if t <= ts]
+    lines = [
+        f"Baron: {_objective_state(events, participants, ts, 'BARON_NASHOR', 20 * 60_000, 6 * 60_000)}",
+    ]
+    if soul_before:
+        lines.append("Dragon: replaced by Elder after Dragon Soul")
+        elder_kills = [
+            e for e in events
+            if e["type"] == "ELITE_MONSTER_KILL"
+            and e.get("monsterType") == "DRAGON"
+            and e.get("monsterSubType") == "ELDER_DRAGON"
+            and e["timestamp"] <= ts
+        ]
+        first_elder = min(soul_before) + 6 * 60_000
+        next_elder = first_elder if not elder_kills else elder_kills[-1]["timestamp"] + 6 * 60_000
+        if ts >= next_elder:
+            lines.append("Elder: alive/contestable")
+        else:
+            lines.append(f"Elder: dead/spawning in {(next_elder - ts) // 1000}s")
+    else:
+        lines.append(f"Dragon: {_objective_state(events, participants, ts, 'DRAGON', 5 * 60_000, 5 * 60_000)}")
+        lines.append("Elder: not available yet (no Dragon Soul)")
+    return lines
+
+
+def _recent_major_objective(events: list[dict], participants: list[dict], player_team: int, ts: int, window_ms: int = 60_000) -> tuple[str | None, dict | None]:
+    soul_times = _dragon_soul_times(events, participants)
+    for team_id, soul_ts in soul_times.items():
+        if team_id == player_team and ts - window_ms <= soul_ts <= ts:
+            return "post_soul_overfight", {"timestamp": soul_ts, "name": "Dragon Soul"}
+    for evt in reversed(events):
+        if not (ts - window_ms <= evt["timestamp"] <= ts):
+            continue
+        if evt["type"] != "ELITE_MONSTER_KILL":
+            continue
+        if _event_team(evt, participants) != player_team:
+            continue
+        monster = evt.get("monsterType")
+        sub = evt.get("monsterSubType")
+        if monster == "BARON_NASHOR":
+            return "post_baron_overfight", evt
+        if monster == "DRAGON" and sub == "ELDER_DRAGON":
+            return "post_elder_overfight", evt
+        if monster == "DRAGON":
+            return "post_dragon_overfight", evt
+    return None, None
+
+
+def _jungler_status(events: list[dict], participants: list[dict], player_team: int, ts: int) -> list[str]:
+    lines: list[str] = []
+    for side_label, team_id in [("ally", player_team), ("enemy", 200 if player_team == 100 else 100)]:
+        jungler = next((p for p in participants if p["teamId"] == team_id and p.get("teamPosition") == "JUNGLE"), None)
+        if not jungler:
+            lines.append(f"{side_label} jungler: unknown")
+            continue
+        pid = jungler["participantId"]
+        last_death = next((e for e in reversed(events) if e["type"] == "CHAMPION_KILL" and e.get("victimId") == pid and e["timestamp"] <= ts), None)
+        if not last_death:
+            lines.append(f"{side_label} jungler {jungler['championName']}: likely alive")
+            continue
+        later_activity = any(
+            e["type"] == "CHAMPION_KILL"
+            and last_death["timestamp"] < e["timestamp"] <= ts
+            and (e.get("killerId") == pid or pid in e.get("assistingParticipantIds", []))
+            for e in events
+        )
+        death_age = (ts - last_death["timestamp"]) // 1000
+        likely_dead_window = 55 if ts >= 30 * 60_000 else 35
+        if later_activity or death_age > likely_dead_window:
+            lines.append(f"{side_label} jungler {jungler['championName']}: likely alive (respawn/activity heuristic)")
+        else:
+            lines.append(f"{side_label} jungler {jungler['championName']}: likely dead, died {death_age}s earlier")
+    return lines
+
+
+def _smite_proximity(frames: dict[int, list[dict]], participants: list[dict], player: dict, ts: int) -> list[str]:
+    pframe = _participant_frame(frames, player["participantId"], ts)
+    if not pframe:
+        return ["Smite holder proximity: unavailable (no player frame)"]
+    lines: list[str] = []
+    for p in participants:
+        if 11 not in {p.get("summoner1Id"), p.get("summoner2Id")}:
+            continue
+        frame = _participant_frame(frames, p["participantId"], ts)
+        if not frame:
+            continue
+        dist = _dist_sq(pframe, frame)
+        dist_text = "unknown distance" if dist is None else f"~{int(dist ** 0.5)} units"
+        side = "ally" if p["teamId"] == player["teamId"] else "enemy"
+        lines.append(f"{side} smite holder {p['championName']}: {_zone(frame.get('x'), frame.get('y'))}, {dist_text} from player")
+    return lines or ["Smite holder proximity: unavailable"]
+
+
+def _objective_conversion(events: list[dict], participants: list[dict], player_team: int, ts: int, window_ms: int) -> list[dict]:
+    return [
+        e for e in _meaningful_events(events, ts, ts + window_ms)
+        if _event_side(e, participants, player_team) == "enemy"
+        and (
+            e["type"] == "BUILDING_KILL"
+            or e.get("monsterType") in {"BARON_NASHOR", "DRAGON"}
+        )
+    ]
+
+
+def _classify_death(
+    zone: str,
+    ts: int,
+    unspent: int,
+    teamfight_context: bool,
+    post_objective_label: str | None,
+    prev30_meaningful: list[dict],
+    next90_meaningful: list[dict],
+    enemy_major_60: list[dict],
+    ally_nearby: int,
+    enemy_nearby: int,
+) -> str:
+    enemy_gained = [e for e in next90_meaningful if e.get("_side") == "enemy"]
+    ally_gained = [e for e in next90_meaningful if e.get("_side") == "ally"]
+    if teamfight_context and post_objective_label:
+        return "late_game_teamfight_death"
+    if teamfight_context:
+        if any(e["type"] == "ELITE_MONSTER_KILL" for e in prev30_meaningful + next90_meaningful):
+            return "objective_fight_death"
+        if ally_gained and not enemy_major_60:
+            return "acceptable_trade_death"
+        return "late_game_teamfight_death"
+    if post_objective_label:
+        return "post_objective_overfight"
+    if unspent >= 1500 and (enemy_major_60 or enemy_gained):
+        return "bad_unspent_gold_death"
+    if zone in _TOP_ZONES | {"bot_lane", "blue_bot_jungle", "red_bot_jungle"} and enemy_nearby > ally_nearby:
+        return "side_lane_collapse"
+    if ally_gained and not enemy_gained:
+        return "acceptable_trade_death"
+    if ally_nearby == 0 and enemy_nearby <= 2:
+        return "isolated_pick"
+    return "unclear_low_confidence"
 
 
 def _dragon_label(involvement: str, secured_by: str, zone: str, events: list[dict], participants: list[dict], player_id: int, player_team: int, ts: int, pf_list: list[dict]) -> tuple[str, str, str]:
@@ -325,8 +635,10 @@ def _deaths(events: list[dict], participants: list[dict], player: dict, opponent
     for i, evt in enumerate(deaths, 1):
         ts = evt["timestamp"]
         pos = evt.get("position", {})
-        zone = _zone(pos.get("x"), pos.get("y"))
         pf = _nearest(pf_list, ts)
+        zone = _zone(pos.get("x"), pos.get("y"))
+        if zone == "unknown" and pf:
+            zone = _zone(pf.get("x"), pf.get("y"))
         of = _nearest(of_list, ts) if of_list else None
         killer = _pname(participants, evt.get("killerId"))
         assists = [_pname(participants, a) for a in evt.get("assistingParticipantIds", [])]
@@ -335,38 +647,186 @@ def _deaths(events: list[dict], participants: list[dict], player: dict, opponent
         level = pf["level"] if pf else "?"
         total_gold = pf["total_gold"] if pf else 0
         gold_lead = (pf["total_gold"] - of["total_gold"]) if (pf and of) else None
-        lead_str = f"  gold lead vs laner: {gold_lead:+,}" if gold_lead is not None else ""
-        pre_kills = [e for e in events if e["type"] == "CHAMPION_KILL" and e.get("killerId") == ppid and ts - 30_000 <= e["timestamp"] < ts]
-        lines.append(f"Death #{i} @ {_ts(ts)}  zone: {zone}")
-        lines.append(f"  {threat}  |  level {level}{lead_str}")
-        if pre_kills:
-            lines.append(f"  Classification: risky_overstay_but_traded (secured {len(pre_kills)} kill(s) in the 30s before dying)")
+        lead_str = f"{gold_lead:+,}" if gold_lead is not None else "unknown"
+
+        prev30_kills = [e for e in events if e["type"] == "CHAMPION_KILL" and ts - 30_000 <= e["timestamp"] < ts]
+        prev10_kills = [e for e in events if e["type"] == "CHAMPION_KILL" and ts - 10_000 <= e["timestamp"] < ts]
+        around10_kills = [e for e in events if e["type"] == "CHAMPION_KILL" and ts - 10_000 <= e["timestamp"] <= ts + 10_000]
+        next10_kills = [e for e in events if e["type"] == "CHAMPION_KILL" and ts < e["timestamp"] <= ts + 10_000]
+        next60_kills = [e for e in events if e["type"] == "CHAMPION_KILL" and ts < e["timestamp"] <= ts + 60_000]
+        same_ts_player_kills = [e for e in events if e["type"] == "CHAMPION_KILL" and e.get("killerId") == ppid and e["timestamp"] == ts]
+        pre_player_kills = [e for e in prev30_kills if e.get("killerId") == ppid]
+        player_assists_prev30 = [e for e in prev30_kills if ppid in e.get("assistingParticipantIds", [])]
+        teamfight_context = len(around10_kills) >= 3
+
+        prev30_meaningful = _meaningful_events(events, ts - 30_000, ts)
+        prev10_meaningful = _meaningful_events(events, ts - 10_000, ts)
+        next60_meaningful = _meaningful_events(events, ts, ts + 60_000)
+        next90_meaningful = _meaningful_events(events, ts, ts + 90_000)
+        next120_meaningful = _meaningful_events(events, ts, ts + 120_000)
+        next90_for_class = [dict(e, _side=_event_side(e, participants, pt)) for e in next90_meaningful]
+        enemy_major_60 = [
+            e for e in next60_meaningful
+            if _event_side(e, participants, pt) == "enemy"
+            and e["type"] == "ELITE_MONSTER_KILL"
+            and (e.get("monsterType") == "BARON_NASHOR" or e.get("monsterSubType") == "ELDER_DRAGON" or e.get("monsterType") == "DRAGON")
+        ]
+        objective_conversion_against = bool(enemy_major_60)
+        post_objective_label, post_objective_evt = _recent_major_objective(events, participants, pt, ts)
+        context_labels: list[str] = []
+        if post_objective_label:
+            context_labels.extend(["post_major_objective_fight", post_objective_label])
+            if post_objective_label == "post_soul_overfight" and zone == "mid_lane":
+                context_labels.append("post_soul_mid_fight")
+        ally_nearby, enemy_nearby, ally_names, enemy_names = _nearby_counts(frames, participants, player, ts)
+        death_class = _classify_death(
+            zone,
+            ts,
+            unspent,
+            teamfight_context,
+            post_objective_label,
+            prev30_meaningful,
+            next90_for_class,
+            enemy_major_60,
+            ally_nearby,
+            enemy_nearby,
+        )
+
+        prev30_allied_deaths, prev30_enemy_deaths = _kill_counts(prev30_kills, participants, pt)
+        prev10_allied_deaths, prev10_enemy_deaths = _kill_counts(prev10_kills, participants, pt)
+        next60_allied_deaths, next60_enemy_deaths = _kill_counts(next60_kills, participants, pt)
+
+        lines.append(f"Death #{i} @ {_ts(ts)}")
+        lines.append("Facts:")
+        lines.append(f"- Zone: {zone}")
+        if same_ts_player_kills:
+            victims = ", ".join(_pname(participants, k.get("victimId")) for k in same_ts_player_kills)
+            lines.append(f"- Player killed {victims} and died to {killer} at the same timestamp")
+        else:
+            lines.append(f"- Player {threat}")
+        lines.append(f"- Level {level}, total gold {total_gold:,}, unspent gold {unspent:,} ({_gold_severity(unspent)}), gold lead vs lane opponent {lead_str}")
         if total_gold >= 6000:
-            lines.append(f"  !! Shutdown risk - {total_gold:,}g total (high-value target)")
-        gold_flag = _gold_flag(unspent)
-        if gold_flag:
-            lines.append(gold_flag)
-        for k in [e for e in events if e["type"] == "CHAMPION_KILL" and e.get("killerId") == ppid and ts < e["timestamp"] <= ts + 60_000][:3]:
-            elapsed = (k["timestamp"] - ts) // 1000
-            lines.append(f"  Player post-death kill: {_pname(participants, k.get('victimId'))} at {_ts(k['timestamp'])} (+{elapsed}s)")
-        for window_end, label in [(15_000, "15s"), (30_000, "30s"), (60_000, "60s")]:
-            window_start = ts + (0 if label == "15s" else (15_000 if label == "30s" else 30_000))
-            ally_kills = [e for e in events if e["type"] == "CHAMPION_KILL" and window_start < e["timestamp"] <= ts + window_end and _side(participants, e.get("killerId"), pt) == "ally"]
-            if ally_kills:
-                lines.append(f"  Allies: {len(ally_kills)} kill(s) within {label} of your death")
-        after = _window(events, ts, ts + 90_000)
-        objs = [e for e in after if e["type"] in _OBJECTIVE_TYPES and e.get("monsterType") in _MONSTER_TYPES]
-        towers = [e for e in after if e["type"] == "BUILDING_KILL"]
-        for o in objs[:2]:
-            sub = (o.get("monsterSubType") or o.get("monsterType") or "objective").replace("_", " ").title()
-            elapsed = (o["timestamp"] - ts) // 1000
-            lines.append(f"  -> {_ts(o['timestamp'])}  {_side(participants, o.get('killerId'), pt)} took {sub} (occurred within {elapsed}s of death)")
-        for t in towers[:2]:
-            elapsed = (t["timestamp"] - ts) // 1000
-            lane = t.get("laneType", "?").replace("_", " ")
-            lines.append(f"  -> {_ts(t['timestamp'])}  {_side(participants, t.get('killerId'), pt)} tower fell {lane} (occurred within {elapsed}s of death)")
-        if not objs and not towers:
-            lines.append("  -> No objectives or towers within 90s of death")
+            lines.append("- Shutdown risk: high-value target by total gold")
+        if post_objective_label and post_objective_evt:
+            elapsed = (ts - post_objective_evt["timestamp"]) // 1000
+            lines.append(f"- Team had just secured {post_objective_evt.get('name', _objective_name(post_objective_evt))} {elapsed}s earlier")
+        if teamfight_context:
+            cluster = ", ".join(_kill_desc(e, participants, pt, ppid) for e in around10_kills[:8])
+            lines.append(f"- Fight cluster: {len(around10_kills)} champion kill/death event(s) within +/-10s: {cluster}")
+        if objective_conversion_against:
+            for e in enemy_major_60[:2]:
+                elapsed = (e["timestamp"] - ts) // 1000
+                lines.append(f"- objective_conversion_against_player_team=true: enemy secured {_objective_name(e)} {elapsed}s later")
+
+        lines.append("Pre-death fight cluster - previous 30s:")
+        lines.append(f"- Allied deaths: {prev30_allied_deaths}; enemy deaths: {prev30_enemy_deaths}")
+        lines.append(f"- Player kills: {len(pre_player_kills)}; player assists: {len(player_assists_prev30)}")
+        if prev30_kills:
+            for e in prev30_kills[-6:]:
+                lines.append(f"- {_kill_desc(e, participants, pt, ppid)}")
+        else:
+            lines.append("- No champion deaths in previous 30s")
+        if prev30_meaningful:
+            for e in prev30_meaningful[:4]:
+                lines.append(f"- Previous objective/building: {_format_meaningful(e, participants, pt, ts)}")
+        else:
+            lines.append("- No objectives, towers, or inhibitors taken in previous 30s")
+        for state_line in _objective_state_lines(events, participants, pt, ts):
+            lines.append(f"- Objective state: {state_line}")
+        if context_labels:
+            lines.append(f"- Context labels: {', '.join(context_labels)}")
+
+        lines.append("Pre-death fight cluster - previous 10s:")
+        lines.append(f"- Immediate allied deaths before player death: {prev10_allied_deaths}; immediate enemy deaths: {prev10_enemy_deaths}")
+        if prev10_kills:
+            for e in prev10_kills[-6:]:
+                lines.append(f"- {_kill_desc(e, participants, pt, ppid)}")
+        else:
+            lines.append("- No champion deaths in previous 10s")
+        lines.append(f"- teamfight_context={str(teamfight_context).lower()} ({len(around10_kills)} kill/death events within +/-10s)")
+        lines.append(f"- Nearby at death: allies {ally_nearby}, enemies {enemy_nearby}")
+        if ally_names:
+            lines.append(f"- Nearby allies: {', '.join(ally_names[:5])}")
+        if enemy_names:
+            lines.append(f"- Nearby enemies: {', '.join(enemy_names[:5])}")
+        if teamfight_context and (pre_player_kills or same_ts_player_kills):
+            lines.append("- Note: player kill near death is treated as fight-cluster evidence, not as chase/side-lane overstay evidence")
+
+        lines.append("At death:")
+        lines.append(f"- Killer and assists: {killer}" + (f" (+{', '.join(assists)})" if assists else ""))
+        lines.append(f"- likely_death_class: {death_class}")
+        if context_labels:
+            lines.append(f"- fight_context: {', '.join(context_labels)}")
+        lines.append(f"- objective_conversion_against_player_team={str(objective_conversion_against).lower()}")
+        lines.append(f"- allied/enemy jungler state: {'; '.join(_jungler_status(events, participants, pt, ts))}")
+        for smite_line in _smite_proximity(frames, participants, player, ts):
+            lines.append(f"- {smite_line}")
+
+        lines.append("Position frames around death (timeline-frame approximation):")
+        for sample in _position_samples(frames, participants, player, ts):
+            lines.append(f"- {sample}")
+
+        lines.append("Next 60s / 90s / 120s:")
+        lines.append(f"- Next 10s deaths: {len(next10_kills)}; next 60s allied deaths: {next60_allied_deaths}; next 60s enemy deaths: {next60_enemy_deaths}")
+        if next60_meaningful:
+            for e in next60_meaningful[:5]:
+                lines.append(f"- Next 60s: {_format_meaningful(e, participants, pt, ts)}")
+        else:
+            lines.append("- Next 60s: no objectives, towers, or inhibitors taken")
+        next90_extra = [e for e in next90_meaningful if e not in next60_meaningful]
+        if next90_extra:
+            for e in next90_extra[:4]:
+                lines.append(f"- Next 90s: {_format_meaningful(e, participants, pt, ts)}")
+        next120_extra = [e for e in next120_meaningful if e not in next90_meaningful]
+        if next120_extra:
+            for e in next120_extra[:4]:
+                lines.append(f"- Next 120s: {_format_meaningful(e, participants, pt, ts)}")
+
+        player_team_gains = [e for e in _meaningful_events(events, ts - 30_000, ts + 90_000) if _event_side(e, participants, pt) == "ally"]
+        enemy_team_gains = [e for e in _meaningful_events(events, ts - 30_000, ts + 90_000) if _event_side(e, participants, pt) == "enemy"]
+        lines.append("What was gained for the death:")
+        lines.append("- Player team gained: " + ("; ".join(_format_meaningful(e, participants, pt, ts) for e in player_team_gains[:4]) if player_team_gains else "nothing major in -30s to +90s"))
+        lines.append("- Enemy team gained: " + ("; ".join(_format_meaningful(e, participants, pt, ts) for e in enemy_team_gains[:4]) if enemy_team_gains else "nothing major in -30s to +90s"))
+        if enemy_major_60:
+            lines.append("- Net outcome: bad objective conversion against player team")
+        elif player_team_gains and not enemy_team_gains:
+            lines.append("- Net outcome: likely acceptable or positive trade")
+        elif enemy_team_gains and not player_team_gains:
+            lines.append("- Net outcome: enemy converted the death into map pressure")
+        else:
+            lines.append("- Net outcome: mixed or unclear")
+
+        lines.append("Interpretation:")
+        if death_class == "late_game_teamfight_death" and post_objective_label:
+            lines.append("- late_game_teamfight_death")
+            for label in context_labels:
+                lines.append(f"- {label}")
+            lines.append("- high objective risk because a major objective was live or soon contestable")
+            lines.append("- not enough evidence to call this a chase or isolated overstay")
+        else:
+            lines.append(f"- {death_class}")
+        if unspent >= 1500:
+            lines.append(f"- Unspent gold severity is {_gold_severity(unspent)}; this matters more late when Baron/Elder can be converted")
+        lines.append("- Possible CC catch based on kill cluster, but ability hit data is not available in Riot timeline data.")
+
+        lines.append("Recommendation:")
+        if post_objective_label == "post_soul_overfight":
+            lines.append("- After Soul, reset/spend if possible.")
+            lines.append("- Avoid messy mid fights while Baron is live unless the fight is clearly winning.")
+            lines.append("- If already caught, trading a high-value enemy may be correct, but the earlier positioning/fight commitment is the review point.")
+        elif objective_conversion_against:
+            lines.append("- Treat the death as a map-state problem first: ask what objective the enemy can start before taking the fight.")
+            lines.append("- Spend before contesting late-game neutral objectives whenever the map gives a reset window.")
+        elif death_class == "acceptable_trade_death":
+            lines.append("- The trade may be acceptable; review whether the team gain was planned and whether you could exit after securing it.")
+        elif teamfight_context:
+            lines.append("- Review fight entry timing and whether your team was already committed, rather than framing this as an isolated chase.")
+        else:
+            lines.append("- Review wave state, nearby allies, and objective timers before committing to the position.")
+
+        lines.append("Confidence:")
+        lines.append("- Facts: high confidence for timeline events, gold, deaths, and objective conversions.")
+        lines.append("- Interpretation: medium confidence; timeline frames are approximate and ability hits/CC are not exposed.")
         lines.append("")
     return "\n".join(lines)
 

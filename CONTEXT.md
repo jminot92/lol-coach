@@ -113,8 +113,9 @@ time, which takes ~1 second per match.
    - High unspent gold: flagged at 1500g+ with 30s objective conversion exception
 3. **Lane opponent context** — opponent champion mastery when Riot's Champion Mastery API is available
 4. **Lane phase snapshot** — CS / gold / level at 5, 10, 14 min vs enemy laner
-5. **Deaths & aftermath** — zone, killer, gold tier flags (800/1500/2500g), shutdown risk,
-   pre-death kill classification, ally kills at 15/30/60s after death, objectives/towers within 90s
+5. **Deaths & aftermath** — structured death context with previous 30s / previous 10s fight
+   clusters, at-death objective state, nearby allies/enemies, unspent-gold severity, likely death
+   class, position-frame samples, and 60/90/120s objective conversion aftermath
 6. **Teemo shroom usage** — total placed, early/mid/late buckets, correlation with dragon windows
    (Teemo only; Riot API does not include placement coordinates)
 7. **Full timeline** — every kill, objective, tower, and valid turret plate chronologically
@@ -179,6 +180,7 @@ deployed. No active Cloud Run jobs, no BigQuery tables, no scheduled tasks.
 7. Objective recommendations now consider already-taken Herald and upcoming dragon/baron spawns.
 8. Dragon involvement zones prefer `dragon_pit` / `dragon_area` when the player assisted or secured the objective.
 9. Lane opponent champion mastery is fetched in Cell 5 and included as context.
+10. Death context classifies fight clusters, post-objective overfights, and enemy objective conversions instead of assuming a player kill before death means chase/overstay.
 
 ## Pending refinements (next session)
 
