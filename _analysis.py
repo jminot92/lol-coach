@@ -176,15 +176,15 @@ _BOOT_IDS = {
 _ITEM_NAMES = {
     1001: "Boots", 1026: "Blasting Wand", 1028: "Ruby Crystal", 1031: "Chain Vest", 1033: "Null-Magic Mantle",
     1043: "Recurve Bow", 1052: "Amplifying Tome", 1056: "Doran's Ring", 1058: "Needlessly Large Rod", 1082: "Dark Seal", 2003: "Health Potion",
-    2031: "Refillable Potion", 2055: "Control Ward", 2138: "Elixir of Iron",
-    2139: "Elixir of Sorcery", 2140: "Elixir of Wrath", 2508: "Fated Ashes", 2510: "Dusk and Dawn", 2420: "Seeker's Armguard",
+    2021: "Tunneler", 2031: "Refillable Potion", 2055: "Control Ward", 2138: "Elixir of Iron",
+    2139: "Elixir of Sorcery", 2140: "Elixir of Wrath", 2504: "Kaenic Rookern", 2508: "Fated Ashes", 2510: "Dusk and Dawn", 2420: "Seeker's Armguard",
     2421: "Shattered Armguard", 2422: "Slightly Magical Footwear", 2423: "Perfectly Timed Boots",
     2424: "Broken Stopwatch", 2425: "Stopwatch", 2426: "Broken Stopwatch", 2427: "Broken Stopwatch",
     2428: "Broken Stopwatch", 2429: "Broken Stopwatch", 2430: "Broken Stopwatch",
     3001: "Abyssal Mask", 3002: "Trailblazer", 3003: "Archangel's Staff", 3004: "Manamune",
     3006: "Berserker's Greaves", 3009: "Boots of Swiftness", 3020: "Sorcerer's Shoes",
     3024: "Glacial Buckler", 3026: "Guardian Angel", 3031: "Infinity Edge", 3040: "Seraph's Embrace",
-    3041: "Mejai's Soulstealer", 3042: "Muramana", 3047: "Plated Steelcaps",
+    3041: "Mejai's Soulstealer", 3042: "Muramana", 3046: "Phantom Dancer", 3047: "Plated Steelcaps",
     3050: "Zeke's Convergence", 3053: "Sterak's Gage", 3065: "Spirit Visage",
     3068: "Sunfire Aegis", 3071: "Black Cleaver", 3072: "Bloodthirster",
     3073: "Experimental Hexplate", 3074: "Ravenous Hydra", 3075: "Thornmail",
@@ -220,7 +220,7 @@ _ITEM_NAMES = {
     6701: "Opportunity", 6610: "Sundered Sky", 6616: "Staff of Flowing Water",
     6617: "Moonstone Renewer", 6620: "Echoes of Helia", 6621: "Dawncore",
     6631: "Stridebreaker", 6632: "Divine Sunderer", 6660: "Bami's Cinder",
-    6693: "Prowler's Claw", 6694: "Serylda's Grudge",
+    6333: "Death's Dance", 6693: "Prowler's Claw", 6694: "Serylda's Grudge",
 }
 
 
@@ -670,6 +670,20 @@ def _objective_conversion(events: list[dict], participants: list[dict], player_t
             or e.get("monsterType") in {"BARON_NASHOR", "DRAGON"}
         )
     ]
+
+
+def _major_conversion_name(evt: dict) -> str:
+    if evt["type"] == "BUILDING_KILL":
+        return _building_name(evt)
+    return _objective_name(evt)
+
+
+def _is_major_enemy_conversion(evt: dict) -> bool:
+    if evt["type"] == "ELITE_MONSTER_KILL":
+        return evt.get("monsterType") in {"BARON_NASHOR", "DRAGON"}
+    if evt["type"] == "BUILDING_KILL":
+        return evt.get("buildingType") == "INHIBITOR_BUILDING" or evt.get("towerType") in {"NEXUS_TURRET", "BASE_TURRET"}
+    return False
 
 
 def _trade_context(events: list[dict], participants: list[dict], player_team: int, ts: int, before_ms: int = 30_000, after_ms: int = 90_000) -> dict:
@@ -1639,7 +1653,7 @@ def _decision_quality_summary(events: list[dict], participants: list[dict], play
     death_lines = []
     for i, d in enumerate(deaths, 1):
         tc = _trade_context(events, participants, pt, d["timestamp"])
-        enemy_major = _objective_conversion(events, participants, pt, d["timestamp"], 60_000)
+        enemy_major = [e for e in _objective_conversion(events, participants, pt, d["timestamp"], 60_000) if _is_major_enemy_conversion(e)]
         if tc["pressure_trade"]:
             note = "acceptable pressure trade, exit failed"
         elif enemy_major:
@@ -1843,10 +1857,52 @@ def _key_game_state_phases(events: list[dict], participants: list[dict], player:
         lines.append("Context:")
         lines.append(f"- Trigger: {trigger}")
         lines.append(f"- Candidate player jobs: {', '.join(_candidate_jobs(player, ts, events, participants, frames))}")
-        lines.append("Review question:")
-        lines.append("- Which candidate job best matched ally movement, objective timers, wave state, and exposed structures?")
+        lines.append("Review questions:")
+        lines.extend(f"- {q}" for q in _phase_review_questions(ts, tag, events, participants, player))
         lines.append("")
     return "\n".join(lines) if lines else "No phase snapshots available."
+
+
+def _phase_review_questions(ts: int, tag: str, events: list[dict], participants: list[dict], player: dict) -> list[str]:
+    pt = player["teamId"]
+    upcoming = _objective_spawns_in_window(events, ts, 90_000)
+    exposed = _exposed_structure_state(events, participants, pt, ts)
+    soul_times = _dragon_soul_times(events, participants)
+    baron_live = ts >= 20 * 60_000 and "alive/contestable" in _objective_state(events, participants, ts, "BARON_NASHOR", 20 * 60_000, 6 * 60_000)
+    if "Baron" in tag:
+        return [
+            "Did the team reset and siege cleanly with Baron?",
+            f"Did {player['championName']} shift from side-pressure mode to flank-shroom / wave-escort mode?",
+        ]
+    if "Soul" in tag or (pt in soul_times and abs(ts - soul_times[pt]) <= 60_000):
+        return [
+            "Should the team reset and set Baron after Soul?",
+            "Was the next mid fight necessary while Baron was live?",
+        ]
+    if "Elder" in tag:
+        return [
+            "Did Elder convert into the end, or did the team still need wave/structure setup?",
+            "Was the player entry necessary, or was the team already committed?",
+        ]
+    if "Base pressure" in tag or exposed["enemy_nexus_turrets_destroyed"] or exposed["enemy_inhibitors_destroyed"]:
+        return [
+            "Why did the game not end after base/Nexus turret pressure?",
+            "Were waves, death timers, enemy threats, or lack of reset preventing the finish?",
+        ]
+    if upcoming and player.get("teamPosition") == "TOP" and player.get("championName", "").lower() == "teemo":
+        return [
+            "Was Dragon realistically contestable from top?",
+            "Was Teemo better served trading top pressure, crashing/resetting, or moving early?",
+        ]
+    if ts == 14 * 60_000:
+        return [
+            "Could Teemo convert top lead into tier 2, jungle control, or Baron-side pressure without giving shutdown?",
+        ]
+    if baron_live:
+        return [
+            "Should Teemo pressure side to create Baron control, or group earlier because enemy threats are growing?",
+        ]
+    return ["What map evidence supports each candidate job, and what remains unresolved?"]
 
 
 def _close_window_records(events: list[dict], participants: list[dict], player: dict) -> list[dict]:
@@ -1877,9 +1933,11 @@ def _close_window_records(events: list[dict], participants: list[dict], player: 
             patterns.append("escort_supers")
         if exposed["enemy_nexus_turrets_destroyed"]:
             patterns.append("end_now")
+        game_end_ts = next((e["timestamp"] for e in events if e["type"] == "GAME_END" and ts <= e["timestamp"] <= window_end), None)
+        nexus_kill_ts = next((e["timestamp"] for e in structures if e.get("buildingType") == "NEXUS_BUILDING"), None)
         records.append({
             "start": f"{_ts(ts)} ally {_objective_name(start)}",
-            "peak": f"{_ts(peak['timestamp'])} {_building_name(peak)}",
+            "peak": f"{_ts(peak['timestamp'])} {_building_victim_side(peak, participants, pt)} {_building_name(peak)} destroyed",
             "structures": structures,
             "inhibs": exposed["enemy_inhibitors_destroyed"],
             "nexus": exposed["enemy_nexus_turrets_destroyed"],
@@ -1887,6 +1945,7 @@ def _close_window_records(events: list[dict], participants: list[dict], player: 
             "enemy_deaths": enemy_deaths,
             "ally_deaths": ally_deaths,
             "patterns": patterns,
+            "game_ended": bool(game_end_ts or nexus_kill_ts),
         })
     return records
 
@@ -1895,22 +1954,21 @@ def _close_window_review(events: list[dict], participants: list[dict], player: d
     records = _close_window_records(events, participants, player)
     if not records:
         return "No clear close window detected from Baron/Elder into structure pressure."
-    game_ended = "yes" if player.get("win") else "no"
     lines: list[str] = []
     for r in records:
         lines.append(f"close_window_started: {r['start']}")
         lines.append(f"close_window_peak: {r['peak']}")
         lines.append("Facts:")
-        lines.append(f"- structures_taken: {', '.join(_building_name(e) for e in r['structures'][:8])}")
+        lines.append(f"- structures_taken: {', '.join(_building_victim_side(e, participants, player['teamId']) + ' ' + _building_name(e) for e in r['structures'][:8])}")
         lines.append(f"- inhibitors_down: {r['inhibs']}")
         lines.append(f"- nexus_turrets_down: {r['nexus']}")
         lines.append(f"- player_alive/dead during window: {'dead at ' + ', '.join(_ts(e['timestamp']) for e in r['player_deaths']) if r['player_deaths'] else 'alive/no player death recorded'}")
         lines.append(f"- enemy deaths during window: {len(r['enemy_deaths'])}; allied deaths during window: {len(r['ally_deaths'])}")
-        lines.append(f"- game_ended: {game_ended}")
+        lines.append(f"- game_ended: {'yes' if r['game_ended'] else 'no'}")
         lines.append("Candidate close patterns:")
         lines.append(f"- {', '.join(r['patterns'])}")
         lines.append("Review question:")
-        lines.append("- Why did the game continue after this structure pressure, and did the team reset/siege/escort waves cleanly?")
+        lines.append("- Why did the game continue after Nexus turret/base pressure?")
         lines.append("")
     return "\n".join(lines)
 
@@ -1919,34 +1977,72 @@ def _death_review_index(events: list[dict], participants: list[dict], player: di
     pt = player["teamId"]
     rows = []
     for d in [e for e in events if e["type"] == "CHAMPION_KILL" and e.get("victimId") == player["participantId"]]:
+        ts = d["timestamp"]
         tc = _trade_context(events, participants, pt, d["timestamp"])
-        enemy_major = _objective_conversion(events, participants, pt, d["timestamp"], 60_000)
+        enemy_major = [e for e in _objective_conversion(events, participants, pt, ts, 60_000) if _is_major_enemy_conversion(e)]
+        ally_major = [
+            e for e in _meaningful_events(events, ts, ts + 60_000)
+            if _event_side(e, participants, pt) == "ally"
+            and (
+                e["type"] == "ELITE_MONSTER_KILL"
+                or e.get("buildingType") == "INHIBITOR_BUILDING"
+                or e.get("towerType") in {"BASE_TURRET", "NEXUS_TURRET"}
+            )
+        ]
         post_label, _ = _recent_major_objective(events, participants, pt, d["timestamp"])
         around = [e for e in events if e["type"] == "CHAMPION_KILL" and abs(e["timestamp"] - d["timestamp"]) <= 10_000]
-        if tc["pressure_trade"]:
-            dtype = "pressure trade death"
+        if enemy_major:
+            if post_label == "post_soul_overfight" or len(around) >= 3:
+                dtype = "late_game_teamfight_death"
+            elif post_label:
+                dtype = "post_major_objective_overfight"
+            else:
+                dtype = "bad_objective_conversion"
+            conversion = enemy_major[0]
+            elapsed = (conversion["timestamp"] - ts) // 1000
+            outcome = f"enemy {_major_conversion_name(conversion)} within {elapsed}s"
+            interp = f"{post_label.replace('_', ' ') + ' / ' if post_label else ''}bad objective conversion"
+            priority = "high"
+            question = "should the team reset or set Baron after Soul instead of fighting mid?" if post_label == "post_soul_overfight" else "could this death have been avoided before the enemy objective conversion?"
+        elif ally_major:
+            dtype = "objective_fight_death" if any(e["type"] == "ELITE_MONSTER_KILL" for e in ally_major) else "acceptable_trade_death / late_game_teamfight_death"
+            conversion = ally_major[0]
+            elapsed = (conversion["timestamp"] - ts) // 1000
+            outcome = f"ally {_major_conversion_name(conversion)} within {elapsed}s"
+            interp = "likely acceptable objective fight death" if conversion["type"] == "ELITE_MONSTER_KILL" else "acceptable or positive trade after structure pressure"
+            priority = "low to medium" if conversion["type"] == "ELITE_MONSTER_KILL" else "medium"
+            question = "was the player entry/positioning necessary, or was the team already committed?"
+        elif post_label:
+            dtype = "post_major_objective_overfight"
+            outcome = "no enemy major objective conversion found"
+            interp = post_label.replace("_", " ")
+            priority = "medium"
+            question = "did the team need to keep fighting after the major objective?"
+        elif tc["pressure_trade"]:
+            dtype = "pressure_trade_death"
+            outcome = "mixed map outcome"
             interp = "valid pressure trade, exit failed"
             priority = "medium"
-        elif post_label:
-            dtype = "post-major-objective fight"
-            interp = post_label.replace("_", " ")
-            priority = "high" if enemy_major else "medium"
+            question = "could Teemo exit after the pressure play before enemy collapse?"
         elif len(around) >= 3:
-            dtype = "late-game/teamfight cluster death" if d["timestamp"] >= 25 * 60_000 else "fight-cluster death"
+            dtype = "late_game_teamfight_death" if d["timestamp"] >= 25 * 60_000 else "objective_fight_death"
+            outcome = "no immediate major objective conversion found"
             interp = "messy teamfight or objective fight"
-            priority = "high" if enemy_major else "medium"
+            priority = "medium"
+            question = "was the team already committed, or was this avoidable fight entry?"
         else:
-            dtype = "isolated pick candidate"
+            dtype = "isolated_pick"
+            outcome = "no immediate major objective conversion found"
             interp = "needs coach review"
             priority = "medium"
-        outcome = "enemy major objective within 60s" if enemy_major else "mixed map outcome" if tc["pressure_trade"] else "no immediate major objective conversion found"
+            question = "was this death an isolated pick, or is there missing pressure/objective context?"
         rows.extend([
             f"{_ts(d['timestamp'])}",
             f"- factual_type: {dtype}",
             f"- map_outcome: {outcome}",
             f"- review_priority: {priority}",
             f"- candidate_interpretation: {interp}",
-            "- unresolved_question: did this death buy objective/structure value, or did it give the enemy the next major map play?",
+            f"- unresolved_question: {question}",
             "",
         ])
     return "\n".join(rows) if rows else "No player deaths recorded."
@@ -1970,11 +2066,23 @@ def _objective_team_reaction_review(events: list[dict], participants: list[dict]
             f = _frame_for_participant(frames, p, ts)
             if f and _zone(f.get("x"), f.get("y")) in {"dragon_pit", "baron_pit", "top_river", "bot_river"}:
                 allies_near += 1
-        reaction = "team_committed" if allies_near >= 3 else "team_partially_committed" if allies_near >= 2 else "team_ignored" if allies_near <= 1 else "unclear"
         involvement = "secured" if obj.get("killerId") == player["participantId"] else "assisted" if player["participantId"] in obj.get("assistingParticipantIds", []) else "nearby" if player_zone in {"dragon_pit", "baron_pit"} else "absent"
+        secured_by = _event_side(obj, participants, pt)
+        if secured_by == "ally":
+            reaction = "team_secured"
+        elif allies_near >= 2:
+            reaction = "team_contested_lost"
+        elif involvement in {"nearby", "assisted", "secured"} and allies_near <= 1:
+            reaction = "player_forced_alone"
+        elif player_zone in _TOP_ZONES | {"bot_lane"}:
+            reaction = "player_absent_trade_possible"
+        elif allies_near <= 1:
+            reaction = "team_ignored_enemy_take"
+        else:
+            reaction = "unclear"
         lines.append(f"[{_ts(ts)}] {_objective_name(obj)}")
         lines.append("Facts:")
-        lines.append(f"- secured_by: {_event_side(obj, participants, pt)}")
+        lines.append(f"- secured_by: {secured_by}")
         lines.append(f"- player_location: {player_zone}; player_involvement: {involvement}")
         lines.append(f"- junglers: {'; '.join(_jungler_status(events, participants, pt, ts))}")
         lines.append(f"- nearest strong allied resources: {_strong_resources(participants, frames, events, pt, ts)}")
@@ -2024,25 +2132,34 @@ def _coach_handoff_summary(events: list[dict], participants: list[dict], player:
     pt = player["teamId"]
     close_records = _close_window_records(events, participants, player)
     deaths = [e for e in events if e["type"] == "CHAMPION_KILL" and e.get("victimId") == player["participantId"]]
-    evidence = [
-        f"{player['championName']} lane outcome: {_lane_outcome(player, opponent, frames)}",
-    ]
+    pf14 = _at_minute(frames.get(player["participantId"], []), 14) or _nearest(frames.get(player["participantId"], []), 14 * 60_000)
+    of14 = (_at_minute(frames.get(opponent["participantId"], []), 14) or _nearest(frames.get(opponent["participantId"], []), 14 * 60_000)) if opponent else None
+    evidence = []
+    if pf14 and of14:
+        evidence.append(f"{player['championName']} lane outcome: {_lane_outcome(player, opponent, frames)} ({pf14['cs'] - of14['cs']:+} CS, {pf14['total_gold'] - of14['total_gold']:+,}g at 14).")
+    else:
+        evidence.append(f"{player['championName']} lane outcome: {_lane_outcome(player, opponent, frames)}.")
     if close_records:
-        evidence.append(f"Close window: {close_records[0]['start']} -> {close_records[0]['peak']}")
+        evidence.append(f"Close window: {close_records[0]['start']} -> {close_records[0]['peak']}; game_ended={'yes' if close_records[0]['game_ended'] else 'no'}.")
     for d in deaths:
         enemy_major = _objective_conversion(events, participants, pt, d["timestamp"], 60_000)
         post_label, post_evt = _recent_major_objective(events, participants, pt, d["timestamp"])
-        if enemy_major or post_label:
-            evidence.append(f"Death at {_ts(d['timestamp'])}: {post_label or 'objective conversion'}; enemy conversion={bool(enemy_major)}")
+        trade = _trade_context(events, participants, pt, d["timestamp"])
+        if enemy_major:
+            evidence.append(f"Death at {_ts(d['timestamp'])}: enemy converted {_major_conversion_name(enemy_major[0])} {(enemy_major[0]['timestamp'] - d['timestamp']) // 1000}s later.")
+        elif post_label:
+            evidence.append(f"Death at {_ts(d['timestamp'])}: {post_label.replace('_', ' ')} candidate; no enemy major conversion in 60s.")
+        elif trade["pressure_trade"]:
+            evidence.append(f"Death at {_ts(d['timestamp'])}: pressure trade / exit-failure candidate.")
     review_areas = [
         "Closing after Baron/inhib/nexus turret pressure." if close_records else "Finding or creating a clear close window.",
-        "Deaths that changed objective control.",
+        "Post-Soul/objective-risk fights that changed objective control.",
         "Exit planning after pressure trades.",
     ]
     questions = [
         "When did the game shift from side pressure to siege/escort?",
-        "Were post-major-objective fights forced or avoidable?",
-        "Could pressure deaths have cleaner exits or safer adaptations when team movement was unclear?",
+        "Should the team reset or set Baron after Soul instead of taking a mid fight?",
+        "Could pressure plays have cleaner exits or safer adaptations when team movement was unclear?",
     ]
     return "\n".join([
         "Most useful review areas:",
