@@ -183,6 +183,7 @@ deployed. No active Cloud Run jobs, no BigQuery tables, no scheduled tasks.
 9. Lane opponent champion mastery is fetched in Cell 5 and included as context.
 10. Death context classifies fight clusters, post-objective overfights, and enemy objective conversions instead of assuming a player kill before death means chase/overstay.
 11. High-unspent-gold reviews include reconstructed inventory state; six-slotted gold is labelled low-actionability unless item/swap/elixir evidence makes it actionable.
+12. Isolated deaths inside cross-map structure/objective exchanges can be labelled `pressure_trade_death` with `exit_failed` instead of pure `isolated_pick`.
 
 ## Pending refinements (next session)
 

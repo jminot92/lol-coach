@@ -173,10 +173,10 @@ _BOOT_IDS = {
     2423, 2424, 2425, 2426, 2427, 2428, 2429, 2430,
 }
 _ITEM_NAMES = {
-    1001: "Boots", 1026: "Blasting Wand", 1031: "Chain Vest", 1033: "Null-Magic Mantle",
+    1001: "Boots", 1026: "Blasting Wand", 1028: "Ruby Crystal", 1031: "Chain Vest", 1033: "Null-Magic Mantle",
     1043: "Recurve Bow", 1052: "Amplifying Tome", 1056: "Doran's Ring", 1082: "Dark Seal", 2003: "Health Potion",
     2031: "Refillable Potion", 2055: "Control Ward", 2138: "Elixir of Iron",
-    2139: "Elixir of Sorcery", 2140: "Elixir of Wrath", 2420: "Seeker's Armguard",
+    2139: "Elixir of Sorcery", 2140: "Elixir of Wrath", 2508: "Fated Ashes", 2510: "Dusk and Dawn", 2420: "Seeker's Armguard",
     2421: "Shattered Armguard", 2422: "Slightly Magical Footwear", 2423: "Perfectly Timed Boots",
     2424: "Broken Stopwatch", 2425: "Stopwatch", 2426: "Broken Stopwatch", 2427: "Broken Stopwatch",
     2428: "Broken Stopwatch", 2429: "Broken Stopwatch", 2430: "Broken Stopwatch",
@@ -666,6 +666,17 @@ def _objective_conversion(events: list[dict], participants: list[dict], player_t
     ]
 
 
+def _trade_context(events: list[dict], participants: list[dict], player_team: int, ts: int, before_ms: int = 30_000, after_ms: int = 90_000) -> dict:
+    meaningful = _meaningful_events(events, ts - before_ms, ts + after_ms)
+    ally_gains = [e for e in meaningful if _event_side(e, participants, player_team) == "ally"]
+    enemy_gains = [e for e in meaningful if _event_side(e, participants, player_team) == "enemy"]
+    return {
+        "ally_gains": ally_gains,
+        "enemy_gains": enemy_gains,
+        "pressure_trade": bool(ally_gains and enemy_gains),
+    }
+
+
 def _classify_death(
     zone: str,
     ts: int,
@@ -678,6 +689,7 @@ def _classify_death(
     ally_nearby: int,
     enemy_nearby: int,
     gold_actionability: str = "unknown",
+    pressure_trade: bool = False,
 ) -> str:
     enemy_gained = [e for e in next90_meaningful if e.get("_side") == "enemy"]
     ally_gained = [e for e in next90_meaningful if e.get("_side") == "ally"]
@@ -691,6 +703,8 @@ def _classify_death(
         return "late_game_teamfight_death"
     if post_objective_label:
         return "post_objective_overfight"
+    if pressure_trade:
+        return "pressure_trade_death"
     if unspent >= 1500 and gold_actionability != "low" and (enemy_major_60 or enemy_gained):
         return "bad_unspent_gold_death"
     if zone in _TOP_ZONES | {"bot_lane", "blue_bot_jungle", "red_bot_jungle"} and enemy_nearby > ally_nearby:
@@ -854,6 +868,7 @@ def _deaths(events: list[dict], participants: list[dict], player: dict, opponent
         ]
         objective_conversion_against = bool(enemy_major_60)
         post_objective_label, post_objective_evt = _recent_major_objective(events, participants, pt, ts)
+        trade_context = _trade_context(events, participants, pt, ts)
         context_labels: list[str] = []
         if post_objective_label:
             context_labels.extend(["post_major_objective_fight", post_objective_label])
@@ -872,6 +887,7 @@ def _deaths(events: list[dict], participants: list[dict], player: dict, opponent
             ally_nearby,
             enemy_nearby,
             item_state.get("actionability", "unknown"),
+            trade_context["pressure_trade"],
         )
 
         prev30_allied_deaths, prev30_enemy_deaths = _kill_counts(prev30_kills, participants, pt)
@@ -902,6 +918,10 @@ def _deaths(events: list[dict], participants: list[dict], player: dict, opponent
             for e in enemy_major_60[:2]:
                 elapsed = (e["timestamp"] - ts) // 1000
                 lines.append(f"- objective_conversion_against_player_team=true: enemy secured {_objective_name(e)} {elapsed}s later")
+        if trade_context["pressure_trade"]:
+            ally_trade = "; ".join(_format_meaningful(e, participants, pt, ts) for e in trade_context["ally_gains"][:3])
+            enemy_trade = "; ".join(_format_meaningful(e, participants, pt, ts) for e in trade_context["enemy_gains"][:3])
+            lines.append(f"- Pressure trade context: ally gains [{ally_trade}] vs enemy gains [{enemy_trade}]")
 
         lines.append("Pre-death fight cluster - previous 30s:")
         lines.append(f"- Allied deaths: {prev30_allied_deaths}; enemy deaths: {prev30_enemy_deaths}")
@@ -934,6 +954,13 @@ def _deaths(events: list[dict], participants: list[dict], player: dict, opponent
             lines.append(f"- Nearby allies: {', '.join(ally_names[:5])}")
         if enemy_names:
             lines.append(f"- Nearby enemies: {', '.join(enemy_names[:5])}")
+        enemy_involved = [
+            pid for pid in [evt.get("killerId"), *evt.get("assistingParticipantIds", [])]
+            if _side(participants, pid, pt) == "enemy"
+        ]
+        if enemy_nearby == 0 and enemy_involved:
+            involved_names = ", ".join(_pname(participants, pid) for pid in enemy_involved)
+            lines.append(f"- Position-frame proximity caveat: nearby enemies show 0, but kill/assist data confirms enemy involvement ({involved_names}). Position-frame proximity is approximate and conflicts with kill/assist data.")
         if teamfight_context and (pre_player_kills or same_ts_player_kills):
             lines.append("- Note: player kill near death is treated as fight-cluster evidence, not as chase/side-lane overstay evidence")
 
@@ -988,6 +1015,11 @@ def _deaths(events: list[dict], participants: list[dict], player: dict, opponent
                 lines.append(f"- {label}")
             lines.append("- high objective risk because a major objective was live or soon contestable")
             lines.append("- not enough evidence to call this a chase or isolated overstay")
+        elif death_class == "pressure_trade_death":
+            lines.append("- pressure_trade_death")
+            lines.append("- subtype: exit_failed")
+            lines.append("- net_outcome: mixed")
+            lines.append("- The macro idea may be valid because the team gained map value, but the death still needs an exit-route review.")
         else:
             lines.append(f"- {death_class}")
         if unspent >= 1500:
@@ -1015,6 +1047,9 @@ def _deaths(events: list[dict], participants: list[dict], player: dict, opponent
                 lines.append("- If six-slotted, do not reduce this to missed spending; review elixir, defensive swap, and whether the fight should happen with Baron/Elder live.")
             else:
                 lines.append("- Spend before contesting late-game neutral objectives whenever the map gives a reset window.")
+        elif death_class == "pressure_trade_death":
+            lines.append("- The cross-map pressure trade may be valid because the team gained structure/objective value.")
+            lines.append("- Review whether you had a safer exit route after forcing the trade, especially before the enemy's counter-push window.")
         elif death_class == "acceptable_trade_death":
             lines.append("- The trade may be acceptable; review whether the team gain was planned and whether you could exit after securing it.")
         elif teamfight_context:
