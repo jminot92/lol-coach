@@ -76,7 +76,7 @@ Requires `.env` in the project root with `RIOT_API_KEY` set.
 | Cell 2 | Setup — loads API key, looks up live PUUID, initialises client |
 | Cell 3 | Recent games — fetches last 10, prints table |
 | Cell 4 | Select match — edit `MATCH_INDEX` (0 = most recent) or paste a `MATCH_ID` |
-| Cell 5 | Generate file — builds report, saves `.txt`, auto-downloads in Colab |
+| Cell 5 | Generate file — builds compact coaching packet by default, saves `.txt`, auto-downloads in Colab |
 
 ---
 
@@ -103,26 +103,31 @@ time, which takes ~1 second per match.
 
 ---
 
-## What the coaching report contains
+## V1 product direction
 
-1. **Match header** — champion, result, KDA, CS/min, gold, damage, vision, team comps
-2. **Key decision windows** — the main coaching layer:
-   - Facts, interpretation, recommendation, and confidence are separated
-   - Each major window includes a recommended mode such as `objective_setup`, `trade_cross_map`, or `reset_and_spend`
-   - 1st and 2nd dragon: labelled assessment, recommendation, and confidence
-   - TOP LANE outer turret: ally-taken and enemy-taken tracked separately, with live objective context
-   - High unspent gold: flagged at 1500g+ with 30s objective conversion exception
-3. **Win condition and closing analysis** — phase win conditions, recommended mode, play-around target,
-   close-window detection, solo-queue adaptation, enemy threat plan, Teemo identity jobs, and decision summary
-4. **Lane opponent context** — opponent champion mastery when Riot's Champion Mastery API is available
-5. **Lane phase snapshot** — CS / gold / level at 5, 10, 14 min vs enemy laner
-6. **Deaths & aftermath** — structured death context with previous 30s / previous 10s fight
-   clusters, at-death objective state, nearby allies/enemies, inventory-aware unspent-gold
-   actionability, likely death class, position-frame samples, and 60/90/120s objective conversion
-   aftermath
-7. **Teemo shroom usage** — total placed, early/mid/late buckets, correlation with dragon windows
-   (Teemo only; Riot API does not include placement coordinates)
-8. **Full timeline** — every kill, objective, tower, and valid turret plate chronologically
+The tool is a **coaching packet generator**, not an auto-coach. It extracts and structures
+the evidence a human coach or ChatGPT needs to review the match. Default wording should use
+facts, context, candidate interpretations, and review questions rather than hard verdicts.
+
+Cell 5 supports:
+- `OUTPUT_MODE = "compact"` — default packet for pasting into ChatGPT
+- `OUTPUT_MODE = "full_debug"` — includes legacy diagnostic windows and extra heuristics
+- `OUTPUT_MODE = "json"` — exports the compact packet wrapped in JSON
+
+## Compact coaching packet structure
+
+1. **Match Header**
+2. **One-Screen Summary**
+3. **Lane Phase Evidence**
+4. **Key Game State Phases**
+5. **Close Window Detection**
+6. **Death Review Packets** plus **Death Review Index**
+7. **Objective and Team Reaction Review**
+8. **Enemy Threat and Avoidance Context**
+9. **Champion Identity Context**
+10. **Coach Handoff Summary**
+11. **Teemo Shroom Event Context** when relevant
+12. **Key Event Timeline**
 
 ---
 
@@ -188,6 +193,7 @@ deployed. No active Cloud Run jobs, no BigQuery tables, no scheduled tasks.
 11. High-unspent-gold reviews include reconstructed inventory state; six-slotted gold is labelled low-actionability unless item/swap/elixir evidence makes it actionable.
 12. Isolated deaths inside cross-map structure/objective exchanges can be labelled `pressure_trade_death` with `exit_failed` instead of pure `isolated_pick`.
 13. Win-condition analysis identifies phase-by-phase play-around targets, close windows, and whether Teemo should pressure, group, set objectives, siege, or reset.
+14. V1 report is now a compact coaching packet with softer candidate/review-question wording; full diagnostic heuristics moved behind `OUTPUT_MODE = "full_debug"`.
 
 ## Pending refinements (next session)
 
