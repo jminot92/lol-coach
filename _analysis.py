@@ -165,6 +165,184 @@ def _gold_severity(unspent: int) -> str:
     return "low"
 
 
+_TRINKET_IDS = {3330, 3340, 3348, 3363, 3364}
+_ELIXIR_IDS = {2138, 2139, 2140}
+_CONTROL_WARD_ID = 2055
+_BOOT_IDS = {
+    1001, 3006, 3009, 3020, 3047, 3111, 3117, 3158, 3170, 2422,
+    2423, 2424, 2425, 2426, 2427, 2428, 2429, 2430,
+}
+_ITEM_NAMES = {
+    1001: "Boots", 1026: "Blasting Wand", 1031: "Chain Vest", 1033: "Null-Magic Mantle",
+    1043: "Recurve Bow", 1052: "Amplifying Tome", 1056: "Doran's Ring", 1082: "Dark Seal", 2003: "Health Potion",
+    2031: "Refillable Potion", 2055: "Control Ward", 2138: "Elixir of Iron",
+    2139: "Elixir of Sorcery", 2140: "Elixir of Wrath", 2420: "Seeker's Armguard",
+    2421: "Shattered Armguard", 2422: "Slightly Magical Footwear", 2423: "Perfectly Timed Boots",
+    2424: "Broken Stopwatch", 2425: "Stopwatch", 2426: "Broken Stopwatch", 2427: "Broken Stopwatch",
+    2428: "Broken Stopwatch", 2429: "Broken Stopwatch", 2430: "Broken Stopwatch",
+    3001: "Abyssal Mask", 3002: "Trailblazer", 3003: "Archangel's Staff", 3004: "Manamune",
+    3006: "Berserker's Greaves", 3009: "Boots of Swiftness", 3020: "Sorcerer's Shoes",
+    3024: "Glacial Buckler", 3026: "Guardian Angel", 3031: "Infinity Edge", 3040: "Seraph's Embrace",
+    3041: "Mejai's Soulstealer", 3042: "Muramana", 3047: "Plated Steelcaps",
+    3050: "Zeke's Convergence", 3053: "Sterak's Gage", 3065: "Spirit Visage",
+    3068: "Sunfire Aegis", 3071: "Black Cleaver", 3072: "Bloodthirster",
+    3073: "Experimental Hexplate", 3074: "Ravenous Hydra", 3075: "Thornmail",
+    3083: "Warmog's Armor", 3084: "Heartsteel", 3085: "Runaan's Hurricane",
+    3087: "Statikk Shiv", 3089: "Rabadon's Deathcap", 3091: "Wit's End",
+    3094: "Rapid Firecannon", 3100: "Lich Bane", 3102: "Banshee's Veil",
+    3107: "Redemption", 3109: "Knight's Vow", 3110: "Frozen Heart",
+    3111: "Mercury's Treads", 3115: "Nashor's Tooth", 3116: "Rylai's Crystal Scepter",
+    3117: "Mobility Boots", 3121: "Fimbulwinter", 3124: "Guinsoo's Rageblade",
+    3135: "Void Staff", 3137: "Cryptbloom", 3139: "Mercurial Scimitar",
+    3108: "Fiendish Codex", 3113: "Aether Wisp", 3142: "Youmuu's Ghostblade", 3143: "Randuin's Omen", 3145: "Hextech Alternator", 3146: "Hextech Rocketbelt",
+    3152: "Hextech Rocketbelt", 3153: "Blade of the Ruined King", 3156: "Maw of Malmortius",
+    3157: "Zhonya's Hourglass", 3158: "Ionian Boots of Lucidity", 3161: "Spear of Shojin",
+    3165: "Morellonomicon", 3170: "Symbiotic Soles", 3172: "Zephyr", 3177: "Guardian's Blade",
+    3179: "Umbral Glaive", 3190: "Locket of the Iron Solari", 3193: "Gargoyle Stoneplate",
+    3222: "Mikael's Blessing", 3302: "Terminus", 3330: "Scarecrow Effigy",
+    3340: "Stealth Ward", 3348: "Arcane Sweeper", 3363: "Farsight Alteration",
+    3364: "Oracle Lens", 3504: "Ardent Censer", 3508: "Essence Reaver",
+    3742: "Dead Man's Plate", 3748: "Titanic Hydra", 3802: "Lost Chapter",
+    3814: "Edge of Night", 3865: "World Atlas", 3871: "Celestial Opposition",
+    3876: "Solstice Sleigh", 3905: "Imperial Mandate", 4401: "Force of Nature",
+    3916: "Oblivion Orb", 4628: "Horizon Focus", 4629: "Cosmic Drive", 4630: "Blighting Jewel",
+    4632: "Verdant Barrier", 4633: "Riftmaker", 4636: "Night Harvester",
+    4637: "Demonic Embrace", 4638: "Watchful Wardstone", 4642: "Bandleglass Mirror",
+    4643: "Vigilant Wardstone", 4644: "Crown of the Shattered Queen",
+    4645: "Shadowflame", 4646: "Stormsurge", 4629: "Cosmic Drive",
+    6653: "Liandry's Torment", 6655: "Luden's Companion", 6657: "Rod of Ages",
+    6659: "Blackfire Torch", 6662: "Iceborn Gauntlet", 6664: "Hollow Radiance",
+    6665: "Jak'Sho, The Protean", 6667: "Radiant Virtue", 6672: "Kraken Slayer",
+    6673: "Immortal Shieldbow", 6675: "Navori Flickerblade", 6676: "The Collector",
+    6692: "Eclipse", 6694: "Serylda's Grudge", 6695: "Serpent's Fang",
+    6696: "Axiom Arc", 6697: "Hubris", 6698: "Profane Hydra", 6699: "Voltaic Cyclosword",
+    6701: "Opportunity", 6610: "Sundered Sky", 6616: "Staff of Flowing Water",
+    6617: "Moonstone Renewer", 6620: "Echoes of Helia", 6621: "Dawncore",
+    6631: "Stridebreaker", 6632: "Divine Sunderer", 6660: "Bami's Cinder",
+    6693: "Prowler's Claw", 6694: "Serylda's Grudge",
+}
+
+
+def _item_name(item_id: int) -> str:
+    return _ITEM_NAMES.get(item_id, f"Item {item_id}")
+
+
+def _remove_one(items: list[int], item_id: int) -> None:
+    if item_id in items:
+        items.remove(item_id)
+
+
+def _inventory_state(events: list[dict], participant_id: int, ts: int, unspent: int, level: int | str = "?") -> dict:
+    items: list[int] = []
+    latest_purchase_ts: int | None = None
+    elixir_event_ts: int | None = None
+    saw_item_event = False
+    for evt in sorted(events, key=lambda e: e["timestamp"]):
+        if evt["timestamp"] > ts:
+            break
+        if evt.get("participantId") != participant_id:
+            continue
+        etype = evt.get("type")
+        item_id = int(evt.get("itemId") or 0)
+        if etype == "ITEM_PURCHASED" and item_id:
+            saw_item_event = True
+            latest_purchase_ts = evt["timestamp"]
+            if item_id in _ELIXIR_IDS:
+                elixir_event_ts = evt["timestamp"]
+            else:
+                items.append(item_id)
+        elif etype in {"ITEM_SOLD", "ITEM_DESTROYED"} and item_id:
+            saw_item_event = True
+            if item_id in _ELIXIR_IDS:
+                elixir_event_ts = evt["timestamp"]
+            _remove_one(items, item_id)
+        elif etype == "ITEM_UNDO":
+            saw_item_event = True
+            before_id = int(evt.get("beforeId") or 0)
+            after_id = int(evt.get("afterId") or 0)
+            if before_id:
+                _remove_one(items, before_id)
+            if after_id and after_id not in _ELIXIR_IDS:
+                items.append(after_id)
+
+    non_trinket_items = [item_id for item_id in items if item_id not in _TRINKET_IDS]
+    slot_items = [item_id for item_id in non_trinket_items if item_id not in _ELIXIR_IDS]
+    slot_count = min(len(slot_items), 6)
+    six_slotted = slot_count >= 6
+    boots_present = any(item_id in _BOOT_IDS for item_id in non_trinket_items)
+    level_num = int(level) if isinstance(level, int) or (isinstance(level, str) and level.isdigit()) else 0
+    elixir_purchasable = level_num >= 9 and unspent >= 500
+    elixir_active = elixir_event_ts is not None and ts - elixir_event_ts <= 180_000
+    slot_space = slot_count < 6
+
+    if not saw_item_event:
+        actionability = "unknown"
+        upgrade_available = "unknown"
+    elif six_slotted:
+        actionability = "low"
+        upgrade_available = "not directly; inventory was six-slotted, so upgrades require selling/swapping"
+    elif unspent >= 1500:
+        actionability = "likely_actionable"
+        upgrade_available = "likely yes; open item slots plus 1500g+ usually means spendable combat power"
+    elif unspent >= 1000:
+        actionability = "possibly_actionable"
+        upgrade_available = "possible component purchase; exact build path not proven"
+    else:
+        actionability = "low"
+        upgrade_available = "unlikely major upgrade from unspent gold alone"
+
+    defensive_swap = (
+        "possible to evaluate after selling/swapping a slot" if six_slotted and unspent >= 1500
+        else "possible if an open slot and matchup-specific component/item fits" if slot_space and unspent >= 1000
+        else "unlikely from gold alone"
+    )
+    consumable_possible = (
+        "control ward/consumable purchase possible if shop access and slot space existed"
+        if slot_space and unspent >= 75
+        else "no open non-trinket slot for control ward/consumable unless selling/swapping"
+    )
+    latest_purchase = _ts(latest_purchase_ts) if latest_purchase_ts is not None else "unknown"
+    return {
+        "items": non_trinket_items,
+        "slot_count": slot_count,
+        "six_slotted": six_slotted,
+        "boots_present": boots_present,
+        "latest_purchase_ts": latest_purchase_ts,
+        "latest_purchase": latest_purchase,
+        "elixir_active": elixir_active,
+        "elixir_purchasable": elixir_purchasable,
+        "upgrade_available": upgrade_available,
+        "defensive_swap": defensive_swap,
+        "consumable_possible": consumable_possible,
+        "actionability": actionability,
+        "item_data_missing": not saw_item_event,
+    }
+
+
+def _inventory_lines(state: dict, prefix: str = "- ") -> list[str]:
+    items = state["items"]
+    item_text = ", ".join(f"{item_id}:{_item_name(item_id)}" for item_id in items) if items else "none reconstructed"
+    return [
+        f"{prefix}Current items excluding trinket: {item_text}",
+        f"{prefix}Item slots used excluding trinket: {state['slot_count']}/6; six_slotted={str(state['six_slotted']).lower()}; boots_present={str(state['boots_present']).lower()}",
+        f"{prefix}Latest purchase timestamp: {state['latest_purchase']}",
+        f"{prefix}Elixir active/purchasable: active={str(state['elixir_active']).lower()}, purchasable={str(state['elixir_purchasable']).lower()}",
+        f"{prefix}Meaningful item upgrade available: {state['upgrade_available']}",
+        f"{prefix}Defensive swap availability: {state['defensive_swap']}",
+        f"{prefix}Control ward/consumable: {state['consumable_possible']}",
+    ]
+
+
+def _gold_actionability_label(unspent: int, item_state: dict | None) -> str:
+    if not item_state or item_state.get("item_data_missing"):
+        return f"{_gold_severity(unspent)}_provisional_item_state_unknown"
+    if item_state.get("six_slotted") and unspent >= 1500:
+        return "unspent_gold_low_actionability_six_slotted"
+    if item_state.get("actionability") == "likely_actionable" and unspent >= 1500:
+        return f"{_gold_severity(unspent)}_likely_actionable"
+    return f"{_gold_severity(unspent)}_{item_state.get('actionability', 'unknown')}"
+
+
 def _dragon_kills(events: list[dict]) -> list[dict]:
     return [e for e in events if e["type"] == "ELITE_MONSTER_KILL" and e.get("monsterType") == "DRAGON"]
 
@@ -499,6 +677,7 @@ def _classify_death(
     enemy_major_60: list[dict],
     ally_nearby: int,
     enemy_nearby: int,
+    gold_actionability: str = "unknown",
 ) -> str:
     enemy_gained = [e for e in next90_meaningful if e.get("_side") == "enemy"]
     ally_gained = [e for e in next90_meaningful if e.get("_side") == "ally"]
@@ -512,7 +691,7 @@ def _classify_death(
         return "late_game_teamfight_death"
     if post_objective_label:
         return "post_objective_overfight"
-    if unspent >= 1500 and (enemy_major_60 or enemy_gained):
+    if unspent >= 1500 and gold_actionability != "low" and (enemy_major_60 or enemy_gained):
         return "bad_unspent_gold_death"
     if zone in _TOP_ZONES | {"bot_lane", "blue_bot_jungle", "red_bot_jungle"} and enemy_nearby > ally_nearby:
         return "side_lane_collapse"
@@ -648,6 +827,8 @@ def _deaths(events: list[dict], participants: list[dict], player: dict, opponent
         total_gold = pf["total_gold"] if pf else 0
         gold_lead = (pf["total_gold"] - of["total_gold"]) if (pf and of) else None
         lead_str = f"{gold_lead:+,}" if gold_lead is not None else "unknown"
+        item_state = _inventory_state(events, ppid, ts, unspent, level)
+        gold_actionability = _gold_actionability_label(unspent, item_state)
 
         prev30_kills = [e for e in events if e["type"] == "CHAMPION_KILL" and ts - 30_000 <= e["timestamp"] < ts]
         prev10_kills = [e for e in events if e["type"] == "CHAMPION_KILL" and ts - 10_000 <= e["timestamp"] < ts]
@@ -690,6 +871,7 @@ def _deaths(events: list[dict], participants: list[dict], player: dict, opponent
             enemy_major_60,
             ally_nearby,
             enemy_nearby,
+            item_state.get("actionability", "unknown"),
         )
 
         prev30_allied_deaths, prev30_enemy_deaths = _kill_counts(prev30_kills, participants, pt)
@@ -704,9 +886,12 @@ def _deaths(events: list[dict], participants: list[dict], player: dict, opponent
             lines.append(f"- Player killed {victims} and died to {killer} at the same timestamp")
         else:
             lines.append(f"- Player {threat}")
-        lines.append(f"- Level {level}, total gold {total_gold:,}, unspent gold {unspent:,} ({_gold_severity(unspent)}), gold lead vs lane opponent {lead_str}")
+        lines.append(f"- Level {level}, total gold {total_gold:,}, unspent gold {unspent:,} ({gold_actionability}), gold lead vs lane opponent {lead_str}")
         if total_gold >= 6000:
             lines.append("- Shutdown risk: high-value target by total gold")
+        lines.append("- Inventory context:")
+        for inventory_line in _inventory_lines(item_state):
+            lines.append(f"  {inventory_line}")
         if post_objective_label and post_objective_evt:
             elapsed = (ts - post_objective_evt["timestamp"]) // 1000
             lines.append(f"- Team had just secured {post_objective_evt.get('name', _objective_name(post_objective_evt))} {elapsed}s earlier")
@@ -806,17 +991,30 @@ def _deaths(events: list[dict], participants: list[dict], player: dict, opponent
         else:
             lines.append(f"- {death_class}")
         if unspent >= 1500:
-            lines.append(f"- Unspent gold severity is {_gold_severity(unspent)}; this matters more late when Baron/Elder can be converted")
+            if item_state.get("item_data_missing"):
+                lines.append("- Unspent gold severity is provisional because item slots and purchasable upgrades were not evaluated.")
+                lines.append(f"- {unspent:,}g unspent, item state unknown. If not six-slotted, this is severe missed spending. If six-slotted, gold may have low immediate actionability; review elixir/swap options and focus on fight selection around Baron/Elder.")
+            elif item_state.get("six_slotted"):
+                lines.append("- unspent_gold_low_actionability_six_slotted")
+                lines.append("- Gold may not represent missed immediate combat power; review elixir, item upgrade, defensive swap availability, and fight/objective decision.")
+            else:
+                lines.append(f"- Unspent gold appears {_gold_severity(unspent)} and likely actionable because item slots were open.")
         lines.append("- Possible CC catch based on kill cluster, but ability hit data is not available in Riot timeline data.")
 
         lines.append("Recommendation:")
         if post_objective_label == "post_soul_overfight":
-            lines.append("- After Soul, reset/spend if possible.")
+            if item_state.get("six_slotted"):
+                lines.append("- After Soul, review elixir/swap options if a reset is possible, but focus first on whether the next fight is needed while Baron is live.")
+            else:
+                lines.append("- After Soul, reset/spend if possible.")
             lines.append("- Avoid messy mid fights while Baron is live unless the fight is clearly winning.")
             lines.append("- If already caught, trading a high-value enemy may be correct, but the earlier positioning/fight commitment is the review point.")
         elif objective_conversion_against:
             lines.append("- Treat the death as a map-state problem first: ask what objective the enemy can start before taking the fight.")
-            lines.append("- Spend before contesting late-game neutral objectives whenever the map gives a reset window.")
+            if item_state.get("six_slotted"):
+                lines.append("- If six-slotted, do not reduce this to missed spending; review elixir, defensive swap, and whether the fight should happen with Baron/Elder live.")
+            else:
+                lines.append("- Spend before contesting late-game neutral objectives whenever the map gives a reset window.")
         elif death_class == "acceptable_trade_death":
             lines.append("- The trade may be acceptable; review whether the team gain was planned and whether you could exit after securing it.")
         elif teamfight_context:
@@ -924,9 +1122,12 @@ def _decision_windows(events: list[dict], participants: list[dict], player: dict
             if ts_ms < e["timestamp"] <= ts_ms + 30_000
             and ((e["type"] in _OBJECTIVE_TYPES and e.get("monsterType") in _MONSTER_TYPES) or e["type"] == "BUILDING_KILL")
         ]
+        item_state = _inventory_state(events, ppid, ts_ms, f_now["current_gold"], f_now.get("level", "?"))
         if gained_30s:
             lines.append(f"[{f_now['minute']:02d}:00] High unspent gold: {f_now['current_gold']}g")
             lines.append("  Facts:")
+            for inventory_line in _inventory_lines(item_state, prefix="    "):
+                lines.append(inventory_line)
             for e in gained_30s[:2]:
                 elapsed = (e["timestamp"] - ts_ms) // 1000
                 team = _side(participants, e.get("killerId"), pt)
@@ -936,8 +1137,15 @@ def _decision_windows(events: list[dict], participants: list[dict], player: dict
                 else:
                     name = (e.get("monsterSubType") or e.get("monsterType") or "objective").replace("_", " ").title()
                     lines.append(f"    -> {_ts(e['timestamp'])}  {team} secured {name} (+{elapsed}s)")
-            lines.append("  Interpretation: acceptable_greed")
-            lines.append("  Recommendation : Good conversion window. Spend on the next reset before taking another fight.")
+            if item_state.get("six_slotted"):
+                lines.append("  Interpretation: acceptable_greed, unspent_gold_low_actionability_six_slotted")
+                lines.append("  Recommendation : Good conversion window. On the next reset, review elixir/swap options rather than treating the gold as automatically missed combat power.")
+            elif item_state.get("item_data_missing"):
+                lines.append("  Interpretation: acceptable_greed, unspent gold severity provisional because item state is unknown")
+                lines.append("  Recommendation : Good conversion window. If not six-slotted, spend on the next reset; if six-slotted, review elixir/swap options.")
+            else:
+                lines.append("  Interpretation: acceptable_greed")
+                lines.append("  Recommendation : Good conversion window. Spend on the next reset before taking another fight.")
             lines.append("  Confidence     : medium")
             lines.append("")
             continue
@@ -945,6 +1153,8 @@ def _decision_windows(events: list[dict], participants: list[dict], player: dict
         upcoming_90s = _objective_spawns_in_window(events, ts_ms, 90_000)
         lines.append(f"[{f_now['minute']:02d}:00] High unspent gold: {f_now['current_gold']}g")
         lines.append("  Facts:")
+        for inventory_line in _inventory_lines(item_state, prefix="    "):
+            lines.append(inventory_line)
         if contested_90s:
             ally_secured = any(_side(participants, d.get("killerId"), pt) == "ally" for d in contested_90s)
             for d in contested_90s:
@@ -956,24 +1166,49 @@ def _decision_windows(events: list[dict], participants: list[dict], player: dict
                 else:
                     lines.append(f"    ! {sub} occurred within {elapsed}s ({dteam}) - recall timing may have hurt your ability to contest")
             if ally_secured:
-                lines.append("  Interpretation: team secured nearby objective despite high unspent gold")
-                lines.append("  Recommendation : Since the team secured the objective, focus on spending cleanly after the play.")
+                if item_state.get("six_slotted"):
+                    lines.append("  Interpretation: team secured nearby objective; unspent_gold_low_actionability_six_slotted")
+                    lines.append("  Recommendation : Since inventory was full, review elixir/swap options after the play and focus on the next objective setup.")
+                else:
+                    lines.append("  Interpretation: team secured nearby objective despite high unspent gold")
+                    lines.append("  Recommendation : Since the team secured the objective, focus on spending cleanly after the play.")
                 lines.append("  Confidence     : medium")
             else:
-                lines.append("  Interpretation: high gold likely reduced contest power")
-                lines.append("  Recommendation : Recall between waves well before the dragon spawn window, not during it.")
+                if item_state.get("six_slotted"):
+                    lines.append("  Interpretation: unspent_gold_low_actionability_six_slotted; contest issue is more likely fight setup, elixir/swap prep, or objective positioning")
+                    lines.append("  Recommendation : Review elixir/defensive swap availability and objective setup rather than assuming raw gold was directly spendable.")
+                elif item_state.get("item_data_missing"):
+                    lines.append("  Interpretation: high gold severity provisional because item slots and upgrades were not evaluated")
+                    lines.append("  Recommendation : If not six-slotted, recall between waves before the spawn; if six-slotted, review elixir/swap options and positioning.")
+                else:
+                    lines.append("  Interpretation: high gold likely reduced contest power")
+                    lines.append("  Recommendation : Recall between waves well before the dragon spawn window, not during it.")
                 lines.append("  Confidence     : high")
         elif upcoming_90s:
             for spawn_ts, name in upcoming_90s:
                 elapsed = (spawn_ts - ts_ms) // 1000
                 lines.append(f"    -> {name} in {elapsed}s at {_ts(spawn_ts)}")
-            lines.append("  Interpretation: high gold before an objective spawn window")
-            lines.append("  Recommendation : Recall immediately if safe, or avoid fighting until the gold is spent.")
+            if item_state.get("six_slotted"):
+                lines.append("  Interpretation: unspent_gold_low_actionability_six_slotted before an objective spawn window")
+                lines.append("  Recommendation : Review elixir, item upgrade, defensive swap availability, and fight/objective decision.")
+            elif item_state.get("item_data_missing"):
+                lines.append("  Interpretation: high gold before an objective spawn window, but severity is provisional because item state is unknown")
+                lines.append("  Recommendation : If not six-slotted, recall immediately if safe; if six-slotted, review elixir/swap options and objective setup.")
+            else:
+                lines.append("  Interpretation: high gold before an objective spawn window")
+                lines.append("  Recommendation : Recall immediately if safe, or avoid fighting until the gold is spent.")
             lines.append("  Confidence     : medium")
         else:
             lines.append("    No objective clash within 90s - recall timing appears acceptable here")
-            lines.append("  Interpretation: low objective pressure during reset window")
-            lines.append("  Recommendation : Fine to recall, but spending gold sooner accelerates your power spike.")
+            if item_state.get("six_slotted"):
+                lines.append("  Interpretation: low objective pressure; unspent_gold_low_actionability_six_slotted")
+                lines.append("  Recommendation : Fine to delay if no elixir/swap is needed, but check shop options before the next objective fight.")
+            elif item_state.get("item_data_missing"):
+                lines.append("  Interpretation: low objective pressure; unspent severity provisional because item state is unknown")
+                lines.append("  Recommendation : If not six-slotted, spending sooner accelerates your power spike; if six-slotted, review elixir/swap options.")
+            else:
+                lines.append("  Interpretation: low objective pressure during reset window")
+                lines.append("  Recommendation : Fine to recall, but spending gold sooner accelerates your power spike.")
             lines.append("  Confidence     : medium")
         lines.append("")
     return "\n".join(lines) if lines else "No key decision windows found.\n"
