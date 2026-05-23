@@ -108,18 +108,21 @@ time, which takes ~1 second per match.
 1. **Match header** — champion, result, KDA, CS/min, gold, damage, vision, team comps
 2. **Key decision windows** — the main coaching layer:
    - Facts, interpretation, recommendation, and confidence are separated
+   - Each major window includes a recommended mode such as `objective_setup`, `trade_cross_map`, or `reset_and_spend`
    - 1st and 2nd dragon: labelled assessment, recommendation, and confidence
    - TOP LANE outer turret: ally-taken and enemy-taken tracked separately, with live objective context
    - High unspent gold: flagged at 1500g+ with 30s objective conversion exception
-3. **Lane opponent context** — opponent champion mastery when Riot's Champion Mastery API is available
-4. **Lane phase snapshot** — CS / gold / level at 5, 10, 14 min vs enemy laner
-5. **Deaths & aftermath** — structured death context with previous 30s / previous 10s fight
+3. **Win condition and closing analysis** — phase win conditions, recommended mode, play-around target,
+   close-window detection, solo-queue adaptation, enemy threat plan, Teemo identity jobs, and decision summary
+4. **Lane opponent context** — opponent champion mastery when Riot's Champion Mastery API is available
+5. **Lane phase snapshot** — CS / gold / level at 5, 10, 14 min vs enemy laner
+6. **Deaths & aftermath** — structured death context with previous 30s / previous 10s fight
    clusters, at-death objective state, nearby allies/enemies, inventory-aware unspent-gold
    actionability, likely death class, position-frame samples, and 60/90/120s objective conversion
    aftermath
-6. **Teemo shroom usage** — total placed, early/mid/late buckets, correlation with dragon windows
+7. **Teemo shroom usage** — total placed, early/mid/late buckets, correlation with dragon windows
    (Teemo only; Riot API does not include placement coordinates)
-7. **Full timeline** — every kill, objective, tower, and valid turret plate chronologically
+8. **Full timeline** — every kill, objective, tower, and valid turret plate chronologically
 
 ---
 
@@ -184,6 +187,7 @@ deployed. No active Cloud Run jobs, no BigQuery tables, no scheduled tasks.
 10. Death context classifies fight clusters, post-objective overfights, and enemy objective conversions instead of assuming a player kill before death means chase/overstay.
 11. High-unspent-gold reviews include reconstructed inventory state; six-slotted gold is labelled low-actionability unless item/swap/elixir evidence makes it actionable.
 12. Isolated deaths inside cross-map structure/objective exchanges can be labelled `pressure_trade_death` with `exit_failed` instead of pure `isolated_pick`.
+13. Win-condition analysis identifies phase-by-phase play-around targets, close windows, and whether Teemo should pressure, group, set objectives, siege, or reset.
 
 ## Pending refinements (next session)
 

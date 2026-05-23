@@ -1088,6 +1088,7 @@ def _decision_windows(events: list[dict], participants: list[dict], player: dict
         else:
             involvement = "absent"
         assessment, recommendation, confidence = _dragon_label(involvement, secured_by, zone, events, participants, ppid, pt, ts, pf_list)
+        recommended_mode = "trade_cross_map" if assessment == "correct_trade" else "objective_setup" if assessment != "unclear_low_confidence" else "avoid_fight"
         display_zone = zone
         if confidence != "low" and involvement in {"secured", "assisted"} and zone not in {"dragon_pit", "unknown"}:
             display_zone = f"dragon_area (timeline: {zone})"
@@ -1099,6 +1100,7 @@ def _decision_windows(events: list[dict], participants: list[dict], player: dict
         lines.append(f"    Secured by {secured_by}  |  player zone: {display_zone}  |  involvement: {involvement}" + (f"  |  {gold:,}g" if gold else ""))
         if kills_n or towers_n:
             lines.append(f"    Next 90s: {kills_n} kill(s), {towers_n} tower(s)")
+        lines.append(f"  Recommended mode: {recommended_mode}")
         lines.append(f"  Interpretation: {assessment}")
         lines.append(f"  Recommendation : {recommendation}")
         lines.append(f"  Confidence     : {confidence}")
@@ -1126,6 +1128,7 @@ def _decision_windows(events: list[dict], participants: list[dict], player: dict
             rec = "Use top priority to secure Rift Herald vision or reset before the next cross-map play."
         elif "Ally took" in tag:
             rec = "No major objective is spawning immediately; reset, spend gold, then place deeper vision."
+        recommended_mode = "objective_setup" if upcoming else "trade_cross_map" if "Ally took" in tag else "avoid_fight"
         lines.append(f"[{_ts(ts)}] {tag}")
         lines.append("  Facts:")
         lines.append(f"    Player path after: {path}")
@@ -1139,6 +1142,7 @@ def _decision_windows(events: list[dict], participants: list[dict], player: dict
                 lines.append(f"    -> {name} at {_ts(spawn_ts)} (inside next 90s)")
         else:
             lines.append("    No objectives taken or spawning within 90s")
+        lines.append(f"  Recommended mode: {recommended_mode}")
         lines.append("  Interpretation: tower transition window")
         lines.append(f"  Recommendation : {rec}")
         lines.append("  Confidence     : medium")
@@ -1158,6 +1162,9 @@ def _decision_windows(events: list[dict], participants: list[dict], player: dict
             and ((e["type"] in _OBJECTIVE_TYPES and e.get("monsterType") in _MONSTER_TYPES) or e["type"] == "BUILDING_KILL")
         ]
         item_state = _inventory_state(events, ppid, ts_ms, f_now["current_gold"], f_now.get("level", "?"))
+        recommended_mode = "reset_and_spend"
+        if item_state.get("six_slotted"):
+            recommended_mode = "objective_setup"
         if gained_30s:
             lines.append(f"[{f_now['minute']:02d}:00] High unspent gold: {f_now['current_gold']}g")
             lines.append("  Facts:")
@@ -1172,6 +1179,7 @@ def _decision_windows(events: list[dict], participants: list[dict], player: dict
                 else:
                     name = (e.get("monsterSubType") or e.get("monsterType") or "objective").replace("_", " ").title()
                     lines.append(f"    -> {_ts(e['timestamp'])}  {team} secured {name} (+{elapsed}s)")
+            lines.append(f"  Recommended mode: {recommended_mode if not gained_30s else 'trade_cross_map'}")
             if item_state.get("six_slotted"):
                 lines.append("  Interpretation: acceptable_greed, unspent_gold_low_actionability_six_slotted")
                 lines.append("  Recommendation : Good conversion window. On the next reset, review elixir/swap options rather than treating the gold as automatically missed combat power.")
@@ -1200,6 +1208,7 @@ def _decision_windows(events: list[dict], participants: list[dict], player: dict
                     lines.append(f"    ~ {sub} occurred within {elapsed}s ({dteam}) - your team secured it, so this is a lower-urgency reset review")
                 else:
                     lines.append(f"    ! {sub} occurred within {elapsed}s ({dteam}) - recall timing may have hurt your ability to contest")
+            lines.append(f"  Recommended mode: {'objective_setup' if item_state.get('six_slotted') else 'reset_and_spend'}")
             if ally_secured:
                 if item_state.get("six_slotted"):
                     lines.append("  Interpretation: team secured nearby objective; unspent_gold_low_actionability_six_slotted")
@@ -1223,6 +1232,7 @@ def _decision_windows(events: list[dict], participants: list[dict], player: dict
             for spawn_ts, name in upcoming_90s:
                 elapsed = (spawn_ts - ts_ms) // 1000
                 lines.append(f"    -> {name} in {elapsed}s at {_ts(spawn_ts)}")
+            lines.append(f"  Recommended mode: {'objective_setup' if item_state.get('six_slotted') else 'reset_and_spend'}")
             if item_state.get("six_slotted"):
                 lines.append("  Interpretation: unspent_gold_low_actionability_six_slotted before an objective spawn window")
                 lines.append("  Recommendation : Review elixir, item upgrade, defensive swap availability, and fight/objective decision.")
@@ -1235,6 +1245,7 @@ def _decision_windows(events: list[dict], participants: list[dict], player: dict
             lines.append("  Confidence     : medium")
         else:
             lines.append("    No objective clash within 90s - recall timing appears acceptable here")
+            lines.append(f"  Recommended mode: {recommended_mode}")
             if item_state.get("six_slotted"):
                 lines.append("  Interpretation: low objective pressure; unspent_gold_low_actionability_six_slotted")
                 lines.append("  Recommendation : Fine to delay if no elixir/swap is needed, but check shop options before the next objective fight.")
@@ -1325,6 +1336,382 @@ def _teemo_shrooms(events: list[dict], participants: list[dict], player: dict, d
     return "\n".join(lines)
 
 
+def _frame_for_participant(frames: dict[int, list[dict]], participant: dict, ts: int) -> dict | None:
+    return _nearest(frames.get(participant["participantId"], []), ts)
+
+
+def _phase_label(ts: int, tag: str = "") -> str:
+    return f"{_ts(ts)} {tag}".strip()
+
+
+def _participant_phase_score(participant: dict, frame: dict | None, events: list[dict], ts: int) -> int:
+    kills = sum(1 for e in events if e["type"] == "CHAMPION_KILL" and e.get("killerId") == participant["participantId"] and e["timestamp"] <= ts)
+    deaths = sum(1 for e in events if e["type"] == "CHAMPION_KILL" and e.get("victimId") == participant["participantId"] and e["timestamp"] <= ts)
+    assists = sum(1 for e in events if e["type"] == "CHAMPION_KILL" and participant["participantId"] in e.get("assistingParticipantIds", []) and e["timestamp"] <= ts)
+    gold = frame["total_gold"] if frame else 0
+    level = frame["level"] if frame else 1
+    cs = frame["cs"] if frame else 0
+    return gold + level * 350 + cs * 12 + kills * 500 + assists * 150 - deaths * 250
+
+
+def _top_phase_candidates(participants: list[dict], frames: dict[int, list[dict]], events: list[dict], team_id: int, ts: int) -> list[tuple[dict, dict | None, int]]:
+    candidates = []
+    for p in participants:
+        if p["teamId"] != team_id:
+            continue
+        frame = _frame_for_participant(frames, p, ts)
+        candidates.append((p, frame, _participant_phase_score(p, frame, events, ts)))
+    return sorted(candidates, key=lambda x: x[2], reverse=True)
+
+
+def _lane_opponent_at_phase(participants: list[dict], player: dict) -> dict | None:
+    return _find_opponent(participants, player)
+
+
+def _tower_events(events: list[dict], participants: list[dict], player_team: int, ts: int, side: str | None = None) -> list[dict]:
+    towers = [e for e in events if e["type"] == "BUILDING_KILL" and e["timestamp"] <= ts]
+    if side:
+        towers = [e for e in towers if _event_side(e, participants, player_team) == side]
+    return towers
+
+
+def _phase_mode(ts: int, player: dict, pframe: dict | None, opponent_frame: dict | None, events: list[dict], participants: list[dict], frames: dict[int, list[dict]]) -> tuple[str, str]:
+    pt = player["teamId"]
+    baron_alive = ts >= 20 * 60_000 and "alive/contestable" in _objective_state(events, participants, ts, "BARON_NASHOR", 20 * 60_000, 6 * 60_000)
+    upcoming = _objective_spawns_in_window(events, ts, 90_000)
+    ally_baron = any(
+        e["type"] == "ELITE_MONSTER_KILL"
+        and e.get("monsterType") == "BARON_NASHOR"
+        and _event_side(e, participants, pt) == "ally"
+        and 0 <= ts - e["timestamp"] <= 3 * 60_000
+        for e in events
+    )
+    soul_times = _dragon_soul_times(events, participants)
+    just_soul = pt in soul_times and 0 <= ts - soul_times[pt] <= 90_000
+    exposed = _exposed_structure_state(events, participants, pt, ts)
+    if exposed["enemy_nexus_turrets_destroyed"] or exposed["enemy_inhibitors_destroyed"]:
+        return "end_game_push", "enemy base is exposed; wave escort and siege matter more than random picks"
+    if ally_baron:
+        return "siege_with_team", "Baron buff should convert through grouped or two-lane siege"
+    if just_soul:
+        return "objective_setup", "after Soul, reset map state and set Baron vision instead of taking messy mid fights"
+    if upcoming:
+        return "objective_setup", f"{upcoming[0][1]} is inside 90s; Teemo should shroom entrances before the fight starts"
+    if baron_alive and ts >= 25 * 60_000:
+        return "group_for_teamfight", "Baron is live; side pressure is useful only if it creates safe Baron control"
+    if player.get("championName", "").lower() == "teemo" and pframe and opponent_frame and pframe["total_gold"] - opponent_frame["total_gold"] >= 1200 and ts < 25 * 60_000:
+        return "side_pressure", "Teemo is ahead enough to pull a side-lane answer and convert towers/jungle/objectives"
+    if ts < 14 * 60_000:
+        return "lane_pressure", "early Teemo job is lane control, plates, and punishing melee windows"
+    return "side_pressure", "default mid-game Teemo mode is pressure with exits prepared"
+
+
+def _win_condition_phase(events: list[dict], participants: list[dict], player: dict, opponent: dict | None, frames: dict[int, list[dict]], ts: int, tag: str = "") -> str:
+    pt = player["teamId"]
+    pframe = _frame_for_participant(frames, player, ts)
+    oframe = _frame_for_participant(frames, opponent, ts) if opponent else None
+    candidates = _top_phase_candidates(participants, frames, events, pt, ts)
+    primary_p, primary_f, _ = candidates[0] if candidates else (player, pframe, 0)
+    secondary_p, secondary_f, _ = candidates[1] if len(candidates) > 1 else (player, pframe, 0)
+    mode, mode_reason = _phase_mode(ts, player, pframe, oframe, events, participants, frames)
+    gold_lead = (pframe["total_gold"] - oframe["total_gold"]) if pframe and oframe else None
+    cs_lead = (pframe["cs"] - oframe["cs"]) if pframe and oframe else None
+    player_primary = primary_p["participantId"] == player["participantId"]
+    primary = (
+        f"{player['championName']} side pressure"
+        if player_primary and mode in {"lane_pressure", "side_pressure"}
+        else f"{primary_p['championName']} as strongest resource point"
+    )
+    if mode in {"siege_with_team", "end_game_push"}:
+        primary = "team siege and wave escort"
+    elif mode == "objective_setup":
+        primary = f"{player['championName']} objective setup plus jungler conversion"
+    secondary = f"{secondary_p['championName']} follow-up damage/objective conversion"
+    play_around = "self through side pressure" if player_primary and mode in {"lane_pressure", "side_pressure"} else "team siege carries" if mode in {"siege_with_team", "end_game_push"} else "jungler/objective setup" if mode == "objective_setup" else f"{primary_p['championName']}"
+    reason_bits = []
+    if gold_lead is not None:
+        reason_bits.append(f"Teemo lane delta: {cs_lead:+} CS, {gold_lead:+,}g vs {opponent['championName'] if opponent else 'lane opponent'}")
+    if primary_f:
+        reason_bits.append(f"{primary_p['championName']} gold/level: {primary_f['total_gold']:,}g/L{primary_f['level']}")
+    recent = _window(events, ts - 90_000, ts)
+    recent_kills = len([e for e in recent if e["type"] == "CHAMPION_KILL"])
+    recent_structures = len([e for e in recent if e["type"] == "BUILDING_KILL"])
+    if recent_kills or recent_structures:
+        reason_bits.append(f"recent 90s: {recent_kills} kill(s), {recent_structures} structure(s)")
+    return "\n".join([
+        f"[{_phase_label(ts, tag)}]",
+        f"Primary win condition: {primary}",
+        f"Secondary win condition: {secondary}",
+        f"Recommended mode: {mode}",
+        f"Play around: {play_around}",
+        f"Reason: {'; '.join(reason_bits) if reason_bits else mode_reason}",
+        f"Player role: {_player_job_for_mode(player, mode)}",
+        f"Question to review: {mode_reason}",
+        "",
+    ])
+
+
+def _player_job_for_mode(player: dict, mode: str) -> str:
+    champ = player.get("championName", "")
+    if champ.lower() == "teemo":
+        jobs = {
+            "lane_pressure": "farm cleanly, punish melee, take plates/tower without donating shutdown",
+            "side_pressure": "force side response, shroom exits first, take tier 2/jungle, leave before collapse",
+            "objective_setup": "arrive early, shroom entrances/chokes, avoid first face-check, protect jungler access",
+            "group_for_teamfight": "fight through shroomed corridors, stay spaced, do not be first visible in river/mid choke",
+            "siege_with_team": "hover carries, shroom flanks, escort waves, chip towers rather than chasing",
+            "end_game_push": "escort supers, cover flanks, hit exposed structures when defenders answer waves",
+        }
+        return jobs.get(mode, "create pressure only when it converts into objective or structure value")
+    return "play the mode that converts your champion's current gold into the next objective or structure"
+
+
+def _exposed_structure_state(events: list[dict], participants: list[dict], player_team: int, ts: int) -> dict:
+    enemy_towers = [
+        e for e in events
+        if e["type"] == "BUILDING_KILL"
+        and e["timestamp"] <= ts
+        and _event_side(e, participants, player_team) == "ally"
+    ]
+    return {
+        "enemy_inhibitors_destroyed": sum(1 for e in enemy_towers if e.get("buildingType") == "INHIBITOR_BUILDING"),
+        "enemy_nexus_turrets_destroyed": sum(1 for e in enemy_towers if e.get("towerType") == "NEXUS_TURRET"),
+        "enemy_base_turrets_destroyed": sum(1 for e in enemy_towers if e.get("towerType") in {"BASE_TURRET", "NEXUS_TURRET"}),
+    }
+
+
+def _strategic_timestamps(events: list[dict], participants: list[dict], player_team: int) -> list[tuple[int, str]]:
+    max_ts = max((e["timestamp"] for e in events), default=0)
+    points = [(m * 60_000, "") for m in [10, 14, 20, 25, 30] if m * 60_000 <= max_ts]
+    for e in events:
+        if e["type"] == "ELITE_MONSTER_KILL" and _event_side(e, participants, player_team) == "ally":
+            if e.get("monsterType") == "BARON_NASHOR":
+                points.append((e["timestamp"], "Ally Baron"))
+            elif e.get("monsterSubType") == "ELDER_DRAGON":
+                points.append((e["timestamp"], "Ally Elder"))
+    for team_id, soul_ts in _dragon_soul_times(events, participants).items():
+        if team_id == player_team:
+            points.append((soul_ts, "Ally Soul"))
+    for e in events:
+        if e["type"] == "BUILDING_KILL" and _event_side(e, participants, player_team) == "ally" and (
+            e.get("towerType") in {"BASE_TURRET", "NEXUS_TURRET"} or e.get("buildingType") == "INHIBITOR_BUILDING"
+        ):
+            points.append((e["timestamp"], "Base pressure"))
+    dedup: list[tuple[int, str]] = []
+    seen: set[int] = set()
+    for ts, tag in sorted(points):
+        bucket = ts // 30_000
+        if bucket in seen:
+            continue
+        seen.add(bucket)
+        dedup.append((ts, tag))
+    return dedup
+
+
+def _close_windows(events: list[dict], participants: list[dict], player: dict) -> str:
+    pt = player["teamId"]
+    starts = [
+        e for e in events
+        if e["type"] == "ELITE_MONSTER_KILL"
+        and _event_side(e, participants, pt) == "ally"
+        and e.get("monsterType") in {"BARON_NASHOR", "DRAGON"}
+        and (e.get("monsterType") == "BARON_NASHOR" or e.get("monsterSubType") == "ELDER_DRAGON")
+    ]
+    lines: list[str] = []
+    for start in starts[:3]:
+        ts = start["timestamp"]
+        after = _meaningful_events(events, ts, ts + 5 * 60_000)
+        structures = [e for e in after if e["type"] == "BUILDING_KILL" and _event_side(e, participants, pt) == "ally"]
+        if not structures:
+            continue
+        peak = max(structures, key=lambda e: (2 if e.get("towerType") == "NEXUS_TURRET" else 1 if e.get("towerType") == "BASE_TURRET" or e.get("buildingType") == "INHIBITOR_BUILDING" else 0, e["timestamp"]))
+        deaths_after = [
+            e for e in events
+            if e["type"] == "CHAMPION_KILL"
+            and e.get("victimId") == player["participantId"]
+            and ts < e["timestamp"] <= ts + 5 * 60_000
+        ]
+        exposed = _exposed_structure_state(events, participants, pt, peak["timestamp"])
+        pattern = "end_now" if exposed["enemy_nexus_turrets_destroyed"] else "escort_supers" if exposed["enemy_inhibitors_destroyed"] else "two_lane_baron_siege"
+        lines.extend([
+            f"close_window_started: {_ts(ts)} ally {_objective_name(start)}",
+            f"close_window_peak: {_ts(peak['timestamp'])} {_building_name(peak)} destroyed",
+            f"structures_taken: {', '.join(_building_name(e) for e in structures[:6])}",
+            f"base_state_at_peak: inhibs_destroyed={exposed['enemy_inhibitors_destroyed']}, nexus_turrets_destroyed={exposed['enemy_nexus_turrets_destroyed']}",
+            f"player_deaths_during_window: {', '.join(_ts(e['timestamp']) for e in deaths_after) if deaths_after else 'none'}",
+            f"recommended_close_pattern: {pattern}",
+            "close_window_question: why did the game not end here?",
+            "Coaching: once structures are exposed, shift from side-pressure mode to siege/escort mode. The priority is reset, push two lanes, shroom flanks, escort supers, and force defenders to answer waves.",
+            "",
+        ])
+    return "\n".join(lines) if lines else "No clear close window detected from Baron/Elder into structure pressure."
+
+
+def _team_reaction(events: list[dict], participants: list[dict], player: dict, frames: dict[int, list[dict]]) -> str:
+    pt = player["teamId"]
+    lines: list[str] = []
+    for e in events:
+        if e["type"] != "CHAMPION_KILL" or _side(participants, e.get("victimId"), pt) != "enemy":
+            continue
+        ts = e["timestamp"]
+        baron_live = ts >= 20 * 60_000 and "alive/contestable" in _objective_state(events, participants, ts, "BARON_NASHOR", 20 * 60_000, 6 * 60_000)
+        upcoming = _objective_spawns_in_window(events, ts, 75_000)
+        if not baron_live and not upcoming:
+            continue
+        objective_zone = "baron_pit" if baron_live else "dragon_pit"
+        allies_near = 0
+        for p in participants:
+            if p["teamId"] != pt:
+                continue
+            frame = _frame_for_participant(frames, p, ts + 20_000)
+            if frame and _zone(frame.get("x"), frame.get("y")) in {objective_zone, "baron_pit", "dragon_pit", "top_river", "bot_river"}:
+                allies_near += 1
+        reaction = "team_followed" if allies_near >= 3 else "team_partially_followed" if allies_near >= 2 else "team_ignored"
+        lines.append(f"[{_ts(ts)}] Enemy death near objective window -> {reaction}")
+        lines.append("  Solo queue adaptation: if 2+ allies move, commit to objective setup; if not, take guaranteed map value, camps/waves/vision, then reset instead of dying alone for the correct call.")
+        if len(lines) >= 6:
+            break
+    return "\n".join(lines) if lines else "No obvious enemy-dead objective call found. Default adaptation: ping early, watch ally movement, and take guaranteed value if the team does not move."
+
+
+def _enemy_threat_plan(events: list[dict], participants: list[dict], player: dict, frames: dict[int, list[dict]]) -> str:
+    pt = player["teamId"]
+    threats = []
+    for p in participants:
+        if p["teamId"] == pt:
+            continue
+        pid = p["participantId"]
+        killed_player = sum(1 for e in events if e["type"] == "CHAMPION_KILL" and e.get("killerId") == pid and e.get("victimId") == player["participantId"])
+        killed_allies = sum(1 for e in events if e["type"] == "CHAMPION_KILL" and e.get("killerId") == pid and _side(participants, e.get("victimId"), pt) == "ally")
+        last_frame = _frame_for_participant(frames, p, 99 * 60_000)
+        gold = last_frame["total_gold"] if last_frame else 0
+        score = killed_player * 5 + killed_allies * 2 + gold // 3000
+        threats.append((score, p, killed_player, killed_allies, gold))
+    threats.sort(key=lambda x: x[0], reverse=True)
+    lines = []
+    for idx, (_, p, killed_player, killed_allies, gold) in enumerate(threats[:3], 1):
+        role = p.get("teamPosition") or "?"
+        reason = f"{killed_player} player kill(s), {killed_allies} allied kill(s), ~{gold:,}g"
+        rule = "do not enter mid/river choke without vision/shrooms/team spacing" if idx == 1 else "track before committing to side or objective setup"
+        if role == "JUNGLE":
+            rule = "track before Baron/Dragon; objective threat matters even when not directly killing you"
+        lines.append(f"Threat #{idx}: {p['championName']} ({role})")
+        lines.append(f"  Reason: {reason}")
+        lines.append(f"  Rule: {rule}")
+        lines.append("  Ability caveat: possible CC/pick pattern from kill clusters, but ability hits are not confirmed by Riot timeline data.")
+    return "\n".join(lines)
+
+
+def _champion_identity_plan(player: dict) -> str:
+    if player.get("championName", "").lower() != "teemo":
+        return "Champion-specific plan unavailable; use phase/mode recommendations above."
+    return "\n".join([
+        "Teemo early: farm well, pressure lane, punish melee, take plates/tower without donating shutdown.",
+        "Teemo mid: shroom exits first, enemy jungle paths second, force side response, trade top pressure for dragon only when rotation is too late.",
+        "Teemo late: shroom objective entrances, avoid first face-check, play around Baron/Elder/Soul, and use side pressure only when it creates objective or structure value.",
+        "After inhib/nexus turret pressure: shift from side pressure to siege/escort mode; cover flanks and help finish exposed structures.",
+    ])
+
+
+def _decision_quality_summary(events: list[dict], participants: list[dict], player: dict, opponent: dict | None, frames: dict[int, list[dict]]) -> str:
+    ppid = player["participantId"]
+    pt = player["teamId"]
+    deaths = [e for e in events if e["type"] == "CHAMPION_KILL" and e.get("victimId") == ppid]
+    early_frame = _frame_for_participant(frames, player, 14 * 60_000)
+    opp_frame = _frame_for_participant(frames, opponent, 14 * 60_000) if opponent else None
+    lane = "excellent" if early_frame and opp_frame and early_frame["total_gold"] - opp_frame["total_gold"] >= 1500 else "solid" if early_frame else "unclear"
+    ally_objectives = len([e for e in events if e["type"] == "ELITE_MONSTER_KILL" and _event_side(e, participants, pt) == "ally"])
+    enemy_objectives = len([e for e in events if e["type"] == "ELITE_MONSTER_KILL" and _event_side(e, participants, pt) == "enemy"])
+    close_messy = any(e["timestamp"] >= 30 * 60_000 for e in deaths) and any(
+        e["type"] == "BUILDING_KILL" and _event_side(e, participants, pt) == "ally" and e["timestamp"] >= 30 * 60_000
+        for e in events
+    )
+    death_lines = []
+    for i, d in enumerate(deaths, 1):
+        tc = _trade_context(events, participants, pt, d["timestamp"])
+        enemy_major = _objective_conversion(events, participants, pt, d["timestamp"], 60_000)
+        if tc["pressure_trade"]:
+            note = "acceptable pressure trade, exit failed"
+        elif enemy_major:
+            note = "bad outcome because enemy converted objective"
+        else:
+            note = "review positioning and fight commitment"
+        death_lines.append(f"- {_ts(d['timestamp'])}: {note}")
+    return "\n".join([
+        "Game summary:",
+        f"- Lane phase: {lane}",
+        "- Side pressure: strong when it created structures/objective pressure" if player.get("championName", "").lower() == "teemo" else "- Side pressure: judge by structure/objective conversion",
+        f"- Objective contribution: ally objectives {ally_objectives}, enemy objectives {enemy_objectives}",
+        f"- Closing: {'messy' if close_messy else 'not clearly identified as messy'}",
+        "- Main improvement: after major wins, reset the map state instead of taking the next fight.",
+        "",
+        "Death quality:",
+        *(death_lines or ["- No player deaths recorded."]),
+        "",
+        "Win condition summary:",
+        "- 10 to 20 mins: player pressure is primary if lane delta is large; otherwise play through strongest gold holder.",
+        "- 20 to 30 mins: pressure should convert into towers, jungle control, and Baron/Dragon setup.",
+        "- After Baron: team siege becomes the win condition, not more isolated side pressure.",
+        "- After Soul/Elder: reset and next-objective setup should be priority unless the end is immediate.",
+        "",
+        "Main player lesson:",
+        '"You are good at creating pressure. The next skill is knowing when pressure has already done its job and the correct move is to reset, siege, or force the next objective safely."',
+    ])
+
+
+def _win_condition_analysis(events: list[dict], participants: list[dict], player: dict, opponent: dict | None, frames: dict[int, list[dict]]) -> str:
+    pt = player["teamId"]
+    sections: list[str] = ["Phase Win Conditions", ""]
+    for ts, tag in _strategic_timestamps(events, participants, pt):
+        sections.append(_win_condition_phase(events, participants, player, opponent, frames, ts, tag))
+    sections.extend([
+        "Recommended Mode At Death Windows",
+        "",
+    ])
+    for death in [e for e in events if e["type"] == "CHAMPION_KILL" and e.get("victimId") == player["participantId"]]:
+        tc = _trade_context(events, participants, pt, death["timestamp"])
+        post_label, _ = _recent_major_objective(events, participants, pt, death["timestamp"])
+        enemy_conversion = _objective_conversion(events, participants, pt, death["timestamp"], 60_000)
+        if tc["pressure_trade"]:
+            mode = "cross_map_pressure_trade"
+            assessment = "macro call likely valid, exit failed"
+        elif post_label == "post_soul_overfight":
+            mode = "post_soul_reset_or_baron_setup"
+            assessment = "bad if it becomes a messy fight and enemy converts Baron"
+        elif enemy_conversion:
+            mode = "avoid_fight"
+            assessment = "death gave enemy objective conversion"
+        else:
+            mode = "avoid_fight" if death["timestamp"] >= 25 * 60_000 else "side_pressure"
+            assessment = "review whether the fight fit the map state"
+        sections.append(f"[{_ts(death['timestamp'])}] Mode should have been: {mode}")
+        sections.append(f"Assessment: {assessment}")
+        sections.append("Improvement: choose the mode first, then decide whether the fight supports that mode.")
+        sections.append("")
+    sections.extend([
+        "Close Window Detection",
+        "",
+        _close_windows(events, participants, player),
+        "",
+        "Team Reaction / Solo Queue Adaptation",
+        "",
+        _team_reaction(events, participants, player, frames),
+        "",
+        "Enemy Threat and Avoidance Plan",
+        "",
+        _enemy_threat_plan(events, participants, player, frames),
+        "",
+        "Player Job By Champion Identity",
+        "",
+        _champion_identity_plan(player),
+        "",
+        "Decision Quality Summary",
+        "",
+        _decision_quality_summary(events, participants, player, opponent, frames),
+    ])
+    return "\n".join(sections)
+
+
 def build_coaching_report(match_data: dict, timeline_data: dict, puuid: str, game_name: str = "", tag_line: str = "", opponent_info: dict | None = None) -> str:
     info = match_data["info"]
     participants = info["participants"]
@@ -1341,6 +1728,8 @@ def build_coaching_report(match_data: dict, timeline_data: dict, puuid: str, gam
         _match_header(info, player, participants),
         _sep("KEY DECISION WINDOWS"),
         _decision_windows(events, participants, player, frames),
+        _sep("WIN CONDITION AND CLOSING ANALYSIS"),
+        _win_condition_analysis(events, participants, player, opponent, frames),
         _sep("LANE OPPONENT CONTEXT"),
         _opponent_context(opponent, opponent_info),
         _sep("LANE PHASE SNAPSHOT"),
