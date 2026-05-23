@@ -14,16 +14,35 @@ _REGIONAL: str = "americas"
 _PLATFORM: str = "na1"
 
 
-def init(api_key: str, regional: str = "americas", platform: str = "na1") -> None:
+def init(api_key: str | None, regional: str = "americas", platform: str = "na1") -> None:
     global _KEY, _REGIONAL, _PLATFORM
-    _KEY = api_key
+    _KEY = (api_key or "").strip()
+    if not _KEY:
+        raise RuntimeError(
+            "RIOT_API_KEY is missing. In Colab, add it in the Secrets panel "
+            "and make sure Notebook access is toggled on. Riot dev keys also "
+            "expire every 24 hours, so renew it if needed."
+        )
     _REGIONAL = regional
     _PLATFORM = platform
 
 
 def _get(url: str, params: dict | None = None) -> dict | list:
-    r = requests.get(url, headers={"X-Riot-Token": _KEY}, params=params, timeout=10)
-    r.raise_for_status()
+    try:
+        r = requests.get(url, headers={"X-Riot-Token": _KEY}, params=params, timeout=10)
+        r.raise_for_status()
+    except requests.HTTPError as exc:
+        response = exc.response
+        status = response.status_code if response is not None else "unknown"
+        detail = response.text[:500] if response is not None else str(exc)
+        hint = ""
+        if status in (401, 403):
+            hint = " The Riot API key is probably expired, invalid, or not enabled for this notebook."
+        elif status == 429:
+            hint = " Riot rate limited the request; wait a minute and retry."
+        raise RuntimeError(f"Riot API request failed ({status}).{hint} URL: {url}. Response: {detail}") from exc
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Riot API request failed before receiving a response. URL: {url}. Error: {exc}") from exc
     return r.json()
 
 
